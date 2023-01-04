@@ -1,0 +1,26 @@
+[package]
+name = "acmer"
+version = "0.0.1"
+edition = "2021"
+
+[features]
+dynamodb-store = ["aws-config", "aws-sdk-dynamodb"]
+
+[dependencies]
+async-trait = "0.1.60"
+aws-config = { version = "0.52.0", optional = true }
+aws-sdk-dynamodb = { version = "0.22.0", optional = true }
+papaleguas = "0.0.4"
+pem-rfc7468 = "0.6.0"
+rand = "0.8.5"
+rcgen = "0.10.0"
+rustls = "0.20.7"
+rustls-pemfile = "1.0.1"
+sha2 = { version = "0.10.6", features = ["oid"] }
+tokio = { version = "1.23.0", features = ["full"] }
+tokio-rustls = "0.23.4"
+tokio-stream = { version = "0.1.11", features = ["net"] }
+
+[dev-dependencies]
+aws-types = { version = "0.52.0", features = ["hardcoded-credentials"] }
+tempfile = "3.3.0"

@@ -1,0 +1,9 @@
+[package]
+name = "acmer-cli"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+acmer = { path = "../acmer", features = ["dynamodb-store"] }
+hyper = { version = "0.14.23", features = ["http1", "http2", "server", "stream"] }
+tokio = { version = "1.23.0", features = ["full"] }
