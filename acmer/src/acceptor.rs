@@ -1,4 +1,9 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use papaleguas::{AcmeClient, OrderStatus};
 use rustls::{server::Acceptor, Certificate, PrivateKey, ServerConfig};
@@ -8,6 +13,7 @@ use tokio::{
     io::{self, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::mpsc,
+    task::JoinHandle,
 };
 use tokio_rustls::{server::TlsStream, LazyConfigAcceptor};
 use tokio_stream::{wrappers::UnboundedReceiverStream, Stream};
@@ -25,6 +31,13 @@ const ACME_ALPN: &[u8] = b"acme-tls/1";
 
 pub struct AcmeAcceptor {
     connections: UnboundedReceiverStream<io::Result<TlsStream<TcpStream>>>,
+    task: JoinHandle<io::Result<()>>,
+}
+
+impl Drop for AcmeAcceptor {
+    fn drop(&mut self) {
+        self.task.abort()
+    }
 }
 
 impl AcmeAcceptor {
@@ -47,7 +60,7 @@ impl AcmeAcceptor {
         let accounts = Arc::new(accounts);
 
         #[allow(unreachable_code)]
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             loop {
                 let auths = auths.clone();
                 let certs = certs.clone();
@@ -62,7 +75,6 @@ impl AcmeAcceptor {
                     let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
                     let handshake = acceptor.await?;
                     let hello = handshake.client_hello();
-                    println!("Hello");
 
                     let has_acme_tls = hello
                         .alpn()
@@ -73,13 +85,9 @@ impl AcmeAcceptor {
 
                     loop {
                         let mut cert = certs.get_cert(domain).await;
-                        println!("Getting cert {cert:?}");
 
                         if has_acme_tls {
-                            println!("Start validating");
-
                             if let Some(auth) = auths.get_challenge(domain).await {
-                                println!("Validate {domain}");
                                 let auth = Sha256::new().chain_update(auth).finalize();
 
                                 let cert = rcgen::Certificate::from_params({
@@ -111,7 +119,6 @@ impl AcmeAcceptor {
                                 break;
                             }
                         } else if let Some((key, cert)) = cert.take() {
-                            println!("Success {domain}");
                             let conn = handshake
                                 .into_stream(Arc::new(
                                     ServerConfig::builder()
@@ -125,7 +132,6 @@ impl AcmeAcceptor {
                             tx.send(Ok(conn)).ok();
                             break;
                         } else if auths.get_challenge(domain).await.is_none() {
-                            println!("Challenging {domain}");
                             let mut auth = match auths.lock(domain).await {
                                 Ok(lock) => lock,
                                 Err(_) => {
@@ -138,6 +144,7 @@ impl AcmeAcceptor {
                                 .get_account(acme_client.directory_url())
                                 .await
                                 .unwrap();
+
                             let acme_account = acme_client
                                 .existing_account_from_private_key(
                                     papaleguas::PrivateKey::from_der(&acme_account.0).unwrap(),
@@ -165,13 +172,12 @@ impl AcmeAcceptor {
                             let cert = loop {
                                 let order = acme_account.find_order(order.url()).await.unwrap();
                                 match order.status() {
-                                    OrderStatus::Pending => {
+                                    OrderStatus::Pending | OrderStatus::Processing => {
                                         tokio::time::sleep(Duration::from_secs(3)).await;
                                     }
                                     OrderStatus::Ready => {
                                         order.finalize(&key).await.unwrap();
                                     }
-                                    OrderStatus::Processing => continue,
                                     OrderStatus::Valid => break order.certificate().await.unwrap(),
                                     OrderStatus::Invalid => {
                                         return Err(io::Error::new(
@@ -208,10 +214,15 @@ impl AcmeAcceptor {
 
         Self {
             connections: UnboundedReceiverStream::new(rx),
+            task,
         }
     }
+}
 
-    pub fn into_stream(self) -> impl Stream<Item = io::Result<TlsStream<TcpStream>>> {
-        self.connections
+impl Stream for AcmeAcceptor {
+    type Item = io::Result<TlsStream<TcpStream>>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.connections).poll_next(cx)
     }
 }

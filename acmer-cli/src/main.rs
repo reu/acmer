@@ -3,8 +3,8 @@ use std::{env, error::Error, net::SocketAddr};
 use acmer::{
     acceptor::AcmeAcceptor,
     store::{
-        AccountDynamodbStore, AccountFileStore, AuthChallengeDynamodbStore, BoxAuthChallengeStore,
-        BoxedAccountStoreExt, BoxedCertStoreExt, CachedCertStoreExt, CertDynamodbStore,
+        AccountDynamodbStore, AccountFileStore, AuthChallengeDynamodbStore, BoxedAccountStoreExt,
+        BoxedAuthChallengeStoreExt, BoxedCertStoreExt, CachedCertStoreExt, CertDynamodbStore,
         CertFileStore, MemoryAccountStore, MemoryAuthChallengeStore, MemoryCertStore,
     },
 };
@@ -23,7 +23,7 @@ async fn main() -> io::Result<()> {
         .with_contact("rnavarro1+acmer-test@gmail.com")
         .with_account_store(if let Ok(table) = env::var("DYNAMO_ACCOUNT_STORE_TABLE") {
             let store = AccountDynamodbStore::from_env(table).await;
-            // store.create_table().await.unwrap();
+            store.create_table().await.unwrap();
             store.boxed()
         } else if let Ok(path) = env::var("ACCOUNT_STORE_PATH") {
             AccountFileStore::new(path).boxed()
@@ -32,7 +32,7 @@ async fn main() -> io::Result<()> {
         })
         .with_cert_store(if let Ok(table) = env::var("DYNAMO_CERT_STORE_TABLE") {
             let store = CertDynamodbStore::from_env(table).await;
-            // store.create_table().await.unwrap();
+            store.create_table().await.unwrap();
             store.cached().boxed()
         } else if let Ok(path) = env::var("CERT_STORE_PATH") {
             CertFileStore::new(path).cached().boxed()
@@ -42,7 +42,7 @@ async fn main() -> io::Result<()> {
         .with_auth_challenge_store(
             if let Ok(table_name) = env::var("DYNAMO_AUTH_CHALLENGE_TABLE") {
                 let store = AuthChallengeDynamodbStore::from_env(table_name).await;
-                // store.create_table().await.unwrap();
+                store.create_table().await.unwrap();
                 store.boxed()
             } else {
                 MemoryAuthChallengeStore::default().boxed()
@@ -53,9 +53,7 @@ async fn main() -> io::Result<()> {
         )
         .await;
 
-    let connections = server::accept::from_stream(acceptor.into_stream());
-
-    hyper::Server::builder(connections)
+    hyper::Server::builder(server::accept::from_stream(acceptor))
         .serve(service::make_service_fn(|_| async {
             Ok::<_, Box<dyn Error + Send + Sync>>(service::service_fn(|_req| async {
                 Response::builder()

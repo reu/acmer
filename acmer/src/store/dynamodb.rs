@@ -418,7 +418,7 @@ mod test {
     use aws_sdk_dynamodb::{Config, Endpoint, Region};
     use rand::distributions::{Alphanumeric, DistString};
 
-    use crate::store::{BoxxedTest, BoxAuthChallengeStore};
+    use crate::store::BoxedAuthChallengeStoreExt;
 
     use super::*;
 
@@ -445,8 +445,6 @@ mod test {
         store.create_table().await.unwrap();
 
         let store = store.boxed();
-
-        // let store = BoxxedTest::new(store);
 
         let mut lock1 = store.lock("lol.wut").await.unwrap();
         assert!(store.lock("lol.wut").await.is_err());

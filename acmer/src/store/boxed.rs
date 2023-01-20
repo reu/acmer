@@ -64,13 +64,13 @@ impl AccountStore for BoxedAccountStore {
     }
 }
 
-struct MapTest<T, F> {
+struct MapAuthChallengeStore<T, F> {
     inner: T,
     f: F,
 }
 
 #[async_trait]
-impl<T, F, L> AuthChallengeStore for MapTest<T, F>
+impl<T, F, L> AuthChallengeStore for MapAuthChallengeStore<T, F>
 where
     T: AuthChallengeStore,
     L: AuthChallengeDomainLock,
@@ -93,16 +93,16 @@ where
     }
 }
 
-pub struct BoxxedTest(
+pub struct BoxedAuthChallengeStore(
     Box<dyn AuthChallengeStore<LockGuard = BoxedAuthChallengeStoreGuard> + Send + Sync>,
 );
 
-impl BoxxedTest {
+impl BoxedAuthChallengeStore {
     pub fn new<T>(inner: T) -> Self
     where
         T: AuthChallengeStore + 'static,
     {
-        let inner = MapTest {
+        let inner = MapAuthChallengeStore {
             inner,
             f: |lock| BoxedAuthChallengeStoreGuard(Box::new(lock)),
         };
@@ -112,7 +112,7 @@ impl BoxxedTest {
 }
 
 #[async_trait]
-impl AuthChallengeStore for BoxxedTest {
+impl AuthChallengeStore for BoxedAuthChallengeStore {
     type LockGuard = BoxedAuthChallengeStoreGuard;
 
     async fn get_challenge(&self, domain: &str) -> Option<String> {
@@ -128,74 +128,21 @@ impl AuthChallengeStore for BoxxedTest {
     }
 }
 
-#[async_trait]
-pub trait BoxAuthChallengeStore: Send + Sync {
-    async fn get_challenge_boxed(&self, domain: &str) -> Option<String>;
-    async fn lock_boxed(
-        &self,
-        domain: &str,
-    ) -> Result<BoxedAuthChallengeStoreGuard, AuthChallengeStoreLockError>;
-    async fn unlock_boxed(&self, domain: &str);
-    fn boxed(self) -> BoxedAuthChallengeStore
-    where
-        Self: AuthChallengeStore + Sized + 'static,
-    {
+pub trait BoxedAuthChallengeStoreExt {
+    fn boxed(self) -> BoxedAuthChallengeStore;
+}
+
+impl<A: AuthChallengeStore + 'static> BoxedAuthChallengeStoreExt for A {
+    fn boxed(self) -> BoxedAuthChallengeStore {
         BoxedAuthChallengeStore::new(self)
     }
 }
 
-pub struct BoxedAuthChallengeStore(Box<dyn BoxAuthChallengeStore>);
 pub struct BoxedAuthChallengeStoreGuard(Box<dyn AuthChallengeDomainLock + Send>);
-
-impl BoxedAuthChallengeStore {
-    pub fn new(store: impl AuthChallengeStore + 'static) -> Self {
-        BoxedAuthChallengeStore(Box::new(store))
-    }
-}
 
 #[async_trait]
 impl AuthChallengeDomainLock for BoxedAuthChallengeStoreGuard {
     async fn put_challenge(&mut self, challenge: String) {
         self.0.put_challenge(challenge).await
-    }
-}
-
-#[async_trait]
-impl AuthChallengeStore for BoxedAuthChallengeStore {
-    type LockGuard = BoxedAuthChallengeStoreGuard;
-
-    async fn get_challenge(&self, domain: &str) -> Option<String> {
-        self.0.get_challenge_boxed(domain).await
-    }
-
-    async fn lock(&self, domain: &str) -> Result<Self::LockGuard, AuthChallengeStoreLockError> {
-        self.0.lock_boxed(domain).await
-    }
-
-    async fn unlock(&self, domain: &str) {
-        self.0.unlock_boxed(domain).await
-    }
-}
-
-#[async_trait]
-impl<Store, Lock> BoxAuthChallengeStore for Store
-where
-    Store: AuthChallengeStore<LockGuard = Lock> + 'static,
-    Lock: AuthChallengeDomainLock + Send + 'static,
-{
-    async fn get_challenge_boxed(&self, domain: &str) -> Option<String> {
-        self.get_challenge(domain).await
-    }
-
-    async fn lock_boxed(
-        &self,
-        domain: &str,
-    ) -> Result<BoxedAuthChallengeStoreGuard, AuthChallengeStoreLockError> {
-        let lock = self.lock(domain).await?;
-        Ok(BoxedAuthChallengeStoreGuard(Box::new(lock)))
-    }
-
-    async fn unlock_boxed(&self, domain: &str) {
-        self.unlock(domain).await
     }
 }

@@ -137,8 +137,6 @@ where
             panic!("No account provided")
         };
 
-        println!("Done");
-
         AcmeAcceptor::new(
             acme,
             tcp,
