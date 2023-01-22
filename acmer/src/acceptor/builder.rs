@@ -1,6 +1,7 @@
 use papaleguas::AcmeClient;
 use rustls::PrivateKey;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
+use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 
 use crate::store::{
     AccountStore, AuthChallengeStore, BoxedAccountStoreExt, CertStore, MemoryAccountStore,
@@ -102,7 +103,7 @@ where
     }
 
     // TODO: return a result instead of panic
-    pub async fn build_with_tcp_listener(self, tcp: TcpListener) -> AcmeAcceptor {
+    pub async fn build_with_tcp_listener(self, listener: TcpListener) -> AcmeAcceptor<TcpStream> {
         let acme = match self.acme {
             Some(acme) => acme,
             None => AcmeClient::builder()
@@ -139,7 +140,55 @@ where
 
         AcmeAcceptor::new(
             acme,
-            tcp,
+            TcpListenerStream::new(listener),
+            self.cert_store,
+            self.challenge_store,
+            account_store,
+        )
+    }
+
+    // TODO: return a result instead of panic
+    pub async fn build_with_unix_listener(
+        self,
+        listener: UnixListener,
+    ) -> AcmeAcceptor<UnixStream> {
+        let acme = match self.acme {
+            Some(acme) => acme,
+            None => AcmeClient::builder()
+                .build_lets_encrypt_staging()
+                .await
+                .unwrap(),
+        };
+
+        let account_store = if let Some(account_pk) = self.account_pk {
+            SingleAccountStore::new(account_pk).boxed()
+        } else if let Some(ref contacts) = self.contacts {
+            let account_store = self.account_store;
+            let acme_directory = acme.directory_url();
+
+            if account_store.get_account(acme_directory).await.is_none() {
+                let account = acme
+                    .new_account()
+                    .contacts(contacts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                    .with_auto_generated_ec_key()
+                    .terms_of_service_agreed(true)
+                    .send()
+                    .await
+                    .unwrap();
+
+                account_store
+                    .put_account(acme_directory, PrivateKey(account.key().to_der().unwrap()))
+                    .await;
+            }
+
+            account_store.boxed()
+        } else {
+            panic!("No account provided")
+        };
+
+        AcmeAcceptor::new(
+            acme,
+            UnixListenerStream::new(listener),
             self.cert_store,
             self.challenge_store,
             account_store,

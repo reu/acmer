@@ -11,12 +11,12 @@ use rustls_pemfile as pemfile;
 use sha2::{Digest, Sha256};
 use tokio::{
     io::{self, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
     sync::mpsc,
     task::JoinHandle,
 };
 use tokio_rustls::{server::TlsStream, LazyConfigAcceptor};
-use tokio_stream::{wrappers::UnboundedReceiverStream, Stream};
+use tokio_stream::{wrappers::UnboundedReceiverStream, Stream, StreamExt};
 
 use crate::store::{
     AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, MemoryAccountStore,
@@ -29,30 +29,37 @@ mod builder;
 
 const ACME_ALPN: &[u8] = b"acme-tls/1";
 
-pub struct AcmeAcceptor {
-    connections: UnboundedReceiverStream<io::Result<TlsStream<TcpStream>>>,
+pub struct AcmeAcceptor<S> {
+    connections: UnboundedReceiverStream<io::Result<TlsStream<S>>>,
     task: JoinHandle<io::Result<()>>,
 }
 
-impl Drop for AcmeAcceptor {
+impl<S> Drop for AcmeAcceptor<S> {
     fn drop(&mut self) {
         self.task.abort()
     }
 }
 
-impl AcmeAcceptor {
+impl AcmeAcceptor<TcpStream> {
     pub fn builder(
     ) -> AcmeAcceptorBuilder<MemoryAuthChallengeStore, MemoryCertStore, MemoryAccountStore> {
         AcmeAcceptorBuilder::default()
     }
+}
 
-    pub fn new(
+impl<S> AcmeAcceptor<S> {
+    pub fn new<L>(
         acme_client: AcmeClient,
-        tcp: TcpListener,
+        mut incoming: L,
         certs: impl CertStore + 'static,
         auths: impl AuthChallengeStore + 'static,
         accounts: impl AccountStore + 'static,
-    ) -> Self {
+    ) -> Self
+    where
+        L: Stream<Item = io::Result<S>>,
+        L: Send + Unpin + 'static,
+        S: io::AsyncRead + io::AsyncWrite + Unpin + Send + 'static,
+    {
         let (tx, rx) = mpsc::unbounded_channel::<io::Result<_>>();
 
         let certs = Arc::new(certs);
@@ -69,10 +76,13 @@ impl AcmeAcceptor {
 
                 let tx = tx.clone();
 
-                let (tcp_stream, _) = tcp.accept().await?;
+                let conn = match incoming.next().await {
+                    Some(Ok(stream)) => stream,
+                    _ => continue,
+                };
 
                 tokio::spawn(async move {
-                    let acceptor = LazyConfigAcceptor::new(Acceptor::default(), tcp_stream);
+                    let acceptor = LazyConfigAcceptor::new(Acceptor::default(), conn);
                     let handshake = acceptor.await?;
                     let hello = handshake.client_hello();
 
@@ -219,8 +229,8 @@ impl AcmeAcceptor {
     }
 }
 
-impl Stream for AcmeAcceptor {
-    type Item = io::Result<TlsStream<TcpStream>>;
+impl<S> Stream for AcmeAcceptor<S> {
+    type Item = io::Result<TlsStream<S>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.connections).poll_next(cx)
