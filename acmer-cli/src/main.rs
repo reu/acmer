@@ -1,7 +1,7 @@
 use std::{env, error::Error, net::SocketAddr, sync::Arc};
 
 use acmer::{
-    acceptor::AcmeAcceptor,
+    acceptor::{AcmeAcceptor, Connection},
     store::{
         AccountDynamodbStore, AccountFileStore, AuthChallengeDynamodbStore, BoxedAccountStoreExt,
         BoxedAuthChallengeStoreExt, BoxedCertStoreExt, CachedCertStoreExt, CertDynamodbStore,
@@ -73,7 +73,7 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-async fn http_proxy<T>(proxy_uri: Uri, conns: impl Stream<Item = io::Result<T>>)
+async fn http_proxy<T>(proxy_uri: Uri, conns: impl Stream<Item = io::Result<Connection<T>>>)
 where
     T: 'static,
     T: Send + Unpin,
@@ -82,13 +82,15 @@ where
     let authority = proxy_uri.authority().cloned();
 
     hyper::Server::builder(server::accept::from_stream(conns))
-        .serve(service::make_service_fn(move |_| {
+        .serve(service::make_service_fn(move |conn: &Connection<_>| {
+            let sni = Arc::new(conn.sni().to_owned());
             let authority = authority.clone();
             let http = Arc::new(hyper::Client::new());
             let https_proto = HeaderValue::from_str("https").unwrap();
 
             async move {
                 Ok::<_, Box<dyn Error + Send + Sync>>(service::service_fn(move |mut req| {
+                    let sni = sni.clone();
                     let http = http.clone();
                     let authority = authority.clone();
                     let https_proto = https_proto.clone();
@@ -103,6 +105,10 @@ where
                             CONTENT_ENCODING,
                         ] {
                             req.headers_mut().remove(key);
+                        }
+
+                        if req.uri().host() != Some(&sni) {
+                            return Err("Host doesn´t match SNI".into());
                         }
 
                         if let Some(host) = req
