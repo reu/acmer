@@ -10,7 +10,7 @@ use rustls::{server::Acceptor, Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile as pemfile;
 use sha2::{Digest, Sha256};
 use tokio::{
-    io::{self, AsyncWriteExt},
+    io::{self, AsyncRead, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
     task::JoinHandle,
@@ -30,7 +30,7 @@ mod builder;
 const ACME_ALPN: &[u8] = b"acme-tls/1";
 
 pub struct AcmeAcceptor<S> {
-    connections: UnboundedReceiverStream<io::Result<TlsStream<S>>>,
+    connections: UnboundedReceiverStream<io::Result<Connection<S>>>,
     task: JoinHandle<io::Result<()>>,
 }
 
@@ -58,7 +58,7 @@ impl<S> AcmeAcceptor<S> {
     where
         L: Stream<Item = io::Result<S>>,
         L: Send + Unpin + 'static,
-        S: io::AsyncRead + io::AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let (tx, rx) = mpsc::unbounded_channel::<io::Result<_>>();
 
@@ -91,13 +91,13 @@ impl<S> AcmeAcceptor<S> {
                         .map(|mut alpn| alpn.any(|proto| proto == ACME_ALPN))
                         .unwrap_or(false);
 
-                    let domain = hello.server_name().unwrap_or_default();
+                    let domain = hello.server_name().unwrap_or_default().to_owned();
 
                     loop {
-                        let mut cert = certs.get_cert(domain).await;
+                        let mut cert = certs.get_cert(&domain).await;
 
                         if has_acme_tls {
-                            if let Some(auth) = auths.get_challenge(domain).await {
+                            if let Some(auth) = auths.get_challenge(&domain).await {
                                 let auth = Sha256::new().chain_update(auth).finalize();
 
                                 let cert = rcgen::Certificate::from_params({
@@ -139,10 +139,15 @@ impl<S> AcmeAcceptor<S> {
                                 ))
                                 .await?;
 
+                            let conn = Connection {
+                                stream: conn,
+                                sni: domain.to_owned(),
+                            };
+
                             tx.send(Ok(conn)).ok();
                             break;
-                        } else if auths.get_challenge(domain).await.is_none() {
-                            let mut auth = match auths.lock(domain).await {
+                        } else if auths.get_challenge(&domain).await.is_none() {
+                            let mut auth = match auths.lock(&domain).await {
                                 Ok(lock) => lock,
                                 Err(_) => {
                                     tokio::time::sleep(Duration::from_secs(10)).await;
@@ -162,7 +167,7 @@ impl<S> AcmeAcceptor<S> {
                                 .await
                                 .unwrap();
 
-                            let order = acme_account.new_order().dns(domain).send().await.unwrap();
+                            let order = acme_account.new_order().dns(&domain).send().await.unwrap();
 
                             let authorizations = order.authorizations().await.unwrap();
 
@@ -211,7 +216,7 @@ impl<S> AcmeAcceptor<S> {
                                 .map(Certificate)
                                 .collect::<Vec<Certificate>>();
 
-                            certs.put_cert(domain, key, cert).await;
+                            certs.put_cert(&domain, key, cert).await;
 
                             continue;
                         }
@@ -230,9 +235,58 @@ impl<S> AcmeAcceptor<S> {
 }
 
 impl<S> Stream for AcmeAcceptor<S> {
-    type Item = io::Result<TlsStream<S>>;
+    type Item = io::Result<Connection<S>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.connections).poll_next(cx)
+    }
+}
+
+pub struct Connection<S> {
+    stream: TlsStream<S>,
+    sni: String,
+}
+
+impl<S> Connection<S> {
+    pub fn sni(&self) -> &str {
+        &self.sni
+    }
+
+    pub fn into_inner(self) -> TlsStream<S> {
+        self.stream
+    }
+}
+
+impl<S> AsyncRead for Connection<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl<S> AsyncWrite for Connection<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }
