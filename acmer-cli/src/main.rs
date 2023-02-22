@@ -14,9 +14,8 @@ use hyper::{
     server, service, Uri,
 };
 use tokio::{
-    io::{self, AsyncWriteExt},
+    io,
     net::{TcpListener, TcpSocket},
-    try_join,
 };
 use tokio_stream::{Stream, StreamExt};
 
@@ -143,26 +142,9 @@ where
 {
     while let Some(conn) = connections.next().await {
         tokio::spawn(async move {
-            let src = conn?;
-            let dst = TcpSocket::new_v4()?.connect(addr).await?;
-
-            let (mut src_reader, mut src_writer) = io::split(src);
-            let (mut dst_reader, mut dst_writer) = io::split(dst);
-
-            let client_to_server = async {
-                let bytes = io::copy(&mut src_reader, &mut dst_writer).await?;
-                dst_writer.shutdown().await?;
-                io::Result::Ok(bytes)
-            };
-
-            let server_to_client = async {
-                let bytes = io::copy(&mut dst_reader, &mut src_writer).await?;
-                src_writer.shutdown().await?;
-                io::Result::Ok(bytes)
-            };
-
-            try_join!(client_to_server, server_to_client)?;
-
+            let mut src = conn?;
+            let mut dst = TcpSocket::new_v4()?.connect(addr).await?;
+            io::copy_bidirectional(&mut src, &mut dst).await?;
             io::Result::Ok(())
         });
     }
