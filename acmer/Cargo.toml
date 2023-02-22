@@ -2,6 +2,13 @@
 name = "acmer"
 version = "0.0.1"
 edition = "2021"
+license = "MIT"
+authors = ["Rodrigo Navarro <rnavarro@rnavarro.com.br>"]
+description = "ACME TLS certificates management library"
+categories = ["cryptography", "network-programming", "asynchronous"]
+keywords = ["tls", "acme"]
+documentation = "https://docs.rs/acmer"
+repository = "https://github.com/reu/acmer"
 
 [features]
 dynamodb-store = ["aws-config", "aws-sdk-dynamodb"]
