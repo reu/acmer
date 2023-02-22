@@ -27,8 +27,10 @@ async fn main() -> io::Result<()> {
         .and_then(|port| port.parse::<u16>().ok())
         .unwrap_or(4443);
 
+    let acme_email = env::var("ACME_EMAIL").expect("ACME_EMAIL is required");
+
     let acceptor = AcmeAcceptor::builder()
-        .with_contact("rnavarro1+acmer-test@gmail.com")
+        .with_contact(acme_email)
         .with_account_store(if let Ok(table) = env::var("DYNAMO_ACCOUNT_STORE_TABLE") {
             let store = AccountDynamodbStore::from_env(table).await;
             store.create_table().await.unwrap();
