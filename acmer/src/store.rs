@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 use async_trait::async_trait;
 use rustls::{Certificate, PrivateKey};
@@ -6,6 +6,7 @@ use tokio::{
     join,
     sync::{Mutex, OwnedRwLockWriteGuard, RwLock},
 };
+use x509_cert::{der::Decode, Certificate as X509Certificate};
 
 pub use boxed::*;
 #[cfg(feature = "dynamodb-store")]
@@ -168,6 +169,55 @@ impl CertStore for CachedCertStore {
             self.store.put_cert(domain, key.clone(), cert.clone()),
             self.cache.put_cert(domain, key, cert),
         );
+    }
+}
+
+pub struct CertExpirationTimeStore {
+    store: Box<dyn CertStore>,
+}
+
+impl CertExpirationTimeStore {
+    pub fn new(store: impl CertStore + 'static) -> Self {
+        CertExpirationTimeStore {
+            store: Box::new(store),
+        }
+    }
+}
+
+pub trait CertExpirationTimeStoreExt {
+    fn with_validity_check(self) -> CertExpirationTimeStore;
+}
+
+impl<C: CertStore + 'static> CertExpirationTimeStoreExt for C {
+    fn with_validity_check(self) -> CertExpirationTimeStore {
+        CertExpirationTimeStore::new(self)
+    }
+}
+
+#[async_trait]
+impl CertStore for CertExpirationTimeStore {
+    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
+        if let Some((key, cert)) = self.store.get_cert(domain).await {
+            if cert
+                .iter()
+                .filter_map(|cert| X509Certificate::from_der(&cert.0).ok())
+                .map(|cert| cert.tbs_certificate.validity)
+                .any(|val| {
+                    val.not_before.to_system_time() > SystemTime::now()
+                        || val.not_after.to_system_time() < SystemTime::now()
+                })
+            {
+                return None;
+            }
+
+            return Some((key, cert));
+        }
+
+        None
+    }
+
+    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+        self.store.put_cert(domain, key, cert).await
     }
 }
 

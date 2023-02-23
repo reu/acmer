@@ -1,6 +1,6 @@
 [package]
 name = "acmer"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 license = "MIT"
 authors = ["Rodrigo Navarro <rnavarro@rnavarro.com.br>"]
@@ -27,6 +27,7 @@ sha2 = { version = "0.10.6", features = ["oid"] }
 tokio = { version = "1.23.0", features = ["full"] }
 tokio-rustls = "0.23.4"
 tokio-stream = { version = "0.1.11", features = ["io-util", "net"] }
+x509-cert = { version = "0.1.1", features = ["std"] }
 
 [dev-dependencies]
 aws-types = { version = "0.52.0", features = ["hardcoded-credentials"] }
