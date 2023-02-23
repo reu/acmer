@@ -109,6 +109,8 @@ impl DynamodbStore {
             .await?;
 
         loop {
+            sleep(Duration::from_secs(5)).await;
+
             let description = self
                 .client
                 .describe_table()
@@ -120,11 +122,9 @@ impl DynamodbStore {
                 match table.table_status() {
                     Some(TableStatus::Active) => break,
                     Some(TableStatus::Deleting) => return Err("Table is being deleted".into()),
-                    _ => {}
+                    _ => continue,
                 }
             };
-
-            sleep(Duration::from_secs(5)).await;
         }
 
         self.client
