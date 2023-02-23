@@ -5,7 +5,8 @@ use acmer::{
     store::{
         AccountDynamodbStore, AccountFileStore, AuthChallengeDynamodbStore, BoxedAccountStoreExt,
         BoxedAuthChallengeStoreExt, BoxedCertStoreExt, CachedCertStoreExt, CertDynamodbStore,
-        CertFileStore, MemoryAccountStore, MemoryAuthChallengeStore, MemoryCertStore,
+        CertExpirationTimeStoreExt, CertFileStore, MemoryAccountStore, MemoryAuthChallengeStore,
+        MemoryCertStore,
     },
 };
 use hyper::{
@@ -15,7 +16,7 @@ use hyper::{
 };
 use tokio::{
     io,
-    net::{TcpListener, TcpSocket},
+    net::{TcpListener, TcpStream},
 };
 use tokio_stream::{Stream, StreamExt};
 
@@ -33,7 +34,7 @@ async fn main() -> io::Result<()> {
         .with_contact(acme_email)
         .with_account_store(if let Ok(table) = env::var("DYNAMO_ACCOUNT_STORE_TABLE") {
             let store = AccountDynamodbStore::from_env(table).await;
-            store.create_table().await.unwrap();
+            store.create_table().await.ok();
             store.boxed()
         } else if let Ok(path) = env::var("ACCOUNT_STORE_PATH") {
             AccountFileStore::new(path).boxed()
@@ -42,17 +43,20 @@ async fn main() -> io::Result<()> {
         })
         .with_cert_store(if let Ok(table) = env::var("DYNAMO_CERT_STORE_TABLE") {
             let store = CertDynamodbStore::from_env(table).await;
-            store.create_table().await.unwrap();
-            store.cached().boxed()
+            store.create_table().await.ok();
+            store.cached().with_validity_check().boxed()
         } else if let Ok(path) = env::var("CERT_STORE_PATH") {
-            CertFileStore::new(path).cached().boxed()
+            CertFileStore::new(path)
+                .cached()
+                .with_validity_check()
+                .boxed()
         } else {
-            MemoryCertStore::default().boxed()
+            MemoryCertStore::default().with_validity_check().boxed()
         })
         .with_auth_challenge_store(
             if let Ok(table_name) = env::var("DYNAMO_AUTH_CHALLENGE_TABLE") {
                 let store = AuthChallengeDynamodbStore::from_env(table_name).await;
-                store.create_table().await.unwrap();
+                store.create_table().await.ok();
                 store.boxed()
             } else {
                 MemoryAuthChallengeStore::default().boxed()
@@ -145,7 +149,7 @@ where
     while let Some(conn) = connections.next().await {
         tokio::spawn(async move {
             let mut src = conn?;
-            let mut dst = TcpSocket::new_v4()?.connect(addr).await?;
+            let mut dst = TcpStream::connect(addr).await?;
             io::copy_bidirectional(&mut src, &mut dst).await?;
             io::Result::Ok(())
         });
