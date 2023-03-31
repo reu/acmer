@@ -248,6 +248,8 @@ impl AuthChallengeStore for DynamodbStore {
 
     async fn lock(&self, domain: &str) -> Result<Self::LockGuard, AuthChallengeStoreLockError> {
         let lock_id = rand::thread_rng().gen::<[u8; 32]>();
+        // TODO: make this configurable
+        let ttl = Duration::from_secs(120);
 
         self.client
             .put_item()
@@ -257,14 +259,28 @@ impl AuthChallengeStore for DynamodbStore {
             .item(
                 "ttl",
                 AttributeValue::N(
-                    (SystemTime::now() + Duration::from_secs(120))
+                    (SystemTime::now() + ttl)
                         .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
+                        .map_err(|_| AuthChallengeStoreLockError)?
                         .as_secs()
                         .to_string(),
                 ),
             )
-            .condition_expression("attribute_not_exists(hostname)")
+            .condition_expression(
+                "attribute_not_exists(hostname) or (#ttl <> :null and #ttl < :now)",
+            )
+            .expression_attribute_names("#ttl", "ttl")
+            .expression_attribute_values(":null", AttributeValue::Null(true))
+            .expression_attribute_values(
+                ":now",
+                AttributeValue::N(
+                    SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .map_err(|_| AuthChallengeStoreLockError)?
+                        .as_secs()
+                        .to_string(),
+                ),
+            )
             .send()
             .await
             .map_err(|_| AuthChallengeStoreLockError)?;
@@ -274,6 +290,7 @@ impl AuthChallengeStore for DynamodbStore {
             table_name: self.table_name.clone(),
             domain: domain.to_owned(),
             lock_id,
+            ttl,
         })
     }
 
@@ -294,6 +311,7 @@ pub struct DynamodbAuthChallengeLock {
     table_name: String,
     domain: String,
     lock_id: [u8; 32],
+    ttl: Duration,
 }
 
 #[async_trait]
@@ -308,7 +326,7 @@ impl AuthChallengeDomainLock for DynamodbAuthChallengeLock {
             .item(
                 "ttl",
                 AttributeValue::N(
-                    (SystemTime::now() + Duration::from_secs(120))
+                    (SystemTime::now() + self.ttl)
                         .duration_since(SystemTime::UNIX_EPOCH)
                         .unwrap()
                         .as_secs()
@@ -425,8 +443,8 @@ mod test {
     #[tokio::test]
     async fn test_dynamo_lock() {
         let creds = aws_types::Credentials::from_keys(
-            "AKIA4KHOLBWFWHAVUKYX",
-            "tmbEKq94+A9GuHrRfmb/k5v5HpgMsYwkv6DssrVD",
+            "XXXXXXXXXXXXXXXXXXXX",
+            "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY",
             None,
         );
 
@@ -437,6 +455,10 @@ mod test {
             .build();
 
         let dynamo = Client::from_conf(config);
+
+        if let Err(_err) = dynamo.list_tables().send().await {
+            panic!("could not connect to dynamodb-local on http://localhost:8000");
+        }
 
         let table_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
