@@ -1,7 +1,13 @@
 use papaleguas::AcmeClient;
 use rustls::PrivateKey;
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
-use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
+use tokio::{
+    io,
+    net::{TcpListener, TcpStream, UnixListener, UnixStream},
+};
+use tokio_stream::{
+    wrappers::{TcpListenerStream, UnixListenerStream},
+    Stream,
+};
 
 use crate::store::{
     AccountStore, AuthChallengeStore, BoxedAccountStoreExt, CertStore, MemoryAccountStore,
@@ -102,8 +108,11 @@ where
         }
     }
 
-    // TODO: return a result instead of panic
-    pub async fn build_with_tcp_listener(self, listener: TcpListener) -> AcmeAcceptor<TcpStream> {
+    pub async fn build_with_tcp_stream<L>(self, incoming: L) -> AcmeAcceptor<TcpStream>
+    where
+        L: Stream<Item = io::Result<TcpStream>>,
+        L: Send + Unpin + 'static,
+    {
         let acme = match self.acme {
             Some(acme) => acme,
             None => AcmeClient::builder()
@@ -140,11 +149,17 @@ where
 
         AcmeAcceptor::new(
             acme,
-            TcpListenerStream::new(listener),
+            incoming,
             self.cert_store,
             self.challenge_store,
             account_store,
         )
+    }
+
+    // TODO: return a result instead of panic
+    pub async fn build_with_tcp_listener(self, listener: TcpListener) -> AcmeAcceptor<TcpStream> {
+        self.build_with_tcp_stream(TcpListenerStream::new(listener))
+            .await
     }
 
     // TODO: return a result instead of panic
