@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use rustls::{Certificate, PrivateKey};
 use tokio::{
     join,
@@ -174,12 +175,14 @@ impl CertStore for CachedCertStore {
 
 pub struct CertExpirationTimeStore {
     store: Box<dyn CertStore>,
+    validities: DashMap<String, SystemTime>,
 }
 
 impl CertExpirationTimeStore {
     pub fn new(store: impl CertStore + 'static) -> Self {
         CertExpirationTimeStore {
             store: Box::new(store),
+            validities: DashMap::new(),
         }
     }
 }
@@ -197,26 +200,24 @@ impl<C: CertStore + 'static> CertExpirationTimeStoreExt for C {
 #[async_trait]
 impl CertStore for CertExpirationTimeStore {
     async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
-        if let Some((key, cert)) = self.store.get_cert(domain).await {
-            if cert
-                .iter()
-                .filter_map(|cert| X509Certificate::from_der(&cert.0).ok())
-                .map(|cert| cert.tbs_certificate.validity)
-                .any(|val| {
-                    val.not_before.to_system_time() > SystemTime::now()
-                        || val.not_after.to_system_time() < SystemTime::now()
-                })
-            {
-                return None;
-            }
-
-            return Some((key, cert));
+        let (key, cert) = self.store.get_cert(domain).await?;
+        match self.validities.get(domain) {
+            Some(validity) if validity.value() < &SystemTime::now() => None,
+            _ => Some((key, cert)),
         }
-
-        None
     }
 
     async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+        if let Some(not_after) = cert
+            .iter()
+            .filter_map(|cert| X509Certificate::from_der(&cert.0).ok())
+            .map(|cert| cert.tbs_certificate.validity)
+            .map(|val| val.not_after.to_system_time())
+            .min()
+        {
+            self.validities.insert(domain.to_owned(), not_after);
+        }
+
         self.store.put_cert(domain, key, cert).await
     }
 }
