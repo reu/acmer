@@ -58,17 +58,28 @@ impl CertStore for RwLock<HashMap<String, (PrivateKey, Vec<Certificate>)>> {
     }
 }
 
+#[async_trait]
+impl CertStore for DashMap<String, (PrivateKey, Vec<Certificate>)> {
+    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
+        Some(self.get(domain)?.value().clone())
+    }
+
+    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+        self.insert(domain.to_owned(), (key, cert));
+    }
+}
+
 #[derive(Debug, Default)]
-pub struct MemoryCertStore(RwLock<HashMap<String, (PrivateKey, Vec<Certificate>)>>);
+pub struct MemoryCertStore(DashMap<String, (PrivateKey, Vec<Certificate>)>);
 
 #[async_trait]
 impl CertStore for MemoryCertStore {
     async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
-        self.0.read().await.get(domain).cloned()
+        self.0.get_cert(domain).await
     }
 
     async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
-        self.0.write().await.insert(domain.to_owned(), (key, cert));
+        self.0.put_cert(domain, key, cert).await;
     }
 }
 
@@ -241,7 +252,28 @@ impl AccountStore for SingleAccountStore {
 
 #[cfg(test)]
 mod test {
-    use crate::store::{AuthChallengeDomainLock, AuthChallengeStore, MemoryAuthChallengeStore};
+    use rustls::{Certificate, PrivateKey};
+
+    use crate::store::{
+        AuthChallengeDomainLock, AuthChallengeStore, CertStore, MemoryAuthChallengeStore,
+        MemoryCertStore,
+    };
+
+    #[tokio::test]
+    async fn test_memory_store() {
+        let store = MemoryCertStore::default();
+
+        let pkey = PrivateKey(b"pkey".to_vec());
+        let cert = vec![Certificate(b"cert".to_vec())];
+
+        assert!(store.get_cert("lol.wut").await.is_none());
+
+        store.put_cert("lol.wut", pkey.clone(), cert.clone()).await;
+
+        let (stored_key, stored_cert) = store.get_cert("lol.wut").await.unwrap();
+        assert_eq!(stored_key, pkey);
+        assert_eq!(stored_cert, cert);
+    }
 
     #[tokio::test]
     async fn test_auth_store_lock() {
