@@ -8,6 +8,7 @@ use acmer::{
         CertExpirationTimeStoreExt, CertFileStore, MemoryAccountStore, MemoryAuthChallengeStore,
         MemoryCertStore,
     },
+    AcmeClient,
 };
 use hyper::{
     header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, TRANSFER_ENCODING},
@@ -31,6 +32,20 @@ async fn main() -> io::Result<()> {
     let acme_email = env::var("ACME_EMAIL").expect("ACME_EMAIL is required");
 
     let acceptor = AcmeAcceptor::builder()
+        .acme_client(match env::var("ACME_DIRECTORY") {
+            Ok(dir) if dir == "staging" => AcmeClient::builder()
+                .build_lets_encrypt_production()
+                .await
+                .unwrap(),
+            Ok(dir) => AcmeClient::builder()
+                .build_with_directory_url(dir)
+                .await
+                .unwrap(),
+            _ => AcmeClient::builder()
+                .build_lets_encrypt_production()
+                .await
+                .unwrap(),
+        })
         .with_contact(acme_email)
         .with_account_store(if let Ok(table) = env::var("DYNAMO_ACCOUNT_STORE_TABLE") {
             let store = AccountDynamodbStore::from_env(table).await;
