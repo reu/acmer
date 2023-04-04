@@ -26,7 +26,7 @@ async fn main() -> io::Result<()> {
     let https_port = env::var("PORT")
         .ok()
         .and_then(|port| port.parse::<u16>().ok())
-        .unwrap_or(4443);
+        .unwrap_or(443);
 
     let acme_email = env::var("ACME_EMAIL").expect("ACME_EMAIL is required");
 
