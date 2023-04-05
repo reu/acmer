@@ -7,6 +7,7 @@ use tokio::{
     join,
     sync::{Mutex, OwnedRwLockWriteGuard, RwLock},
 };
+use tracing::trace;
 use x509_cert::{der::Decode, Certificate as X509Certificate};
 
 pub use boxed::*;
@@ -169,6 +170,7 @@ impl CertStore for CachedCertStore {
         }
 
         if let Some((key, cert)) = self.store.get_cert(domain).await {
+            trace!(domain, "cert not cached, caching now");
             self.cache.put_cert(domain, key.clone(), cert.clone()).await;
             return Some((key, cert));
         }
@@ -177,6 +179,7 @@ impl CertStore for CachedCertStore {
     }
 
     async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+        trace!(domain, "caching cert");
         join!(
             self.store.put_cert(domain, key.clone(), cert.clone()),
             self.cache.put_cert(domain, key, cert),
@@ -213,7 +216,15 @@ impl CertStore for CertExpirationTimeStore {
     async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
         let (key, cert) = self.store.get_cert(domain).await?;
         match self.validities.get(domain) {
-            Some(validity) if validity.value() < &SystemTime::now() => None,
+            Some(validity) if validity.value() < &SystemTime::now() => {
+                let valid_until = validity
+                    .value()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                trace!(domain, until = valid_until, "cert is expired");
+                None
+            }
             _ => Some((key, cert)),
         }
     }
@@ -226,6 +237,15 @@ impl CertStore for CertExpirationTimeStore {
             .map(|val| val.not_after.to_system_time())
             .min()
         {
+            let valid_until = not_after
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            trace!(
+                domain,
+                until = valid_until,
+                "cert is valid until {valid_until}"
+            );
             self.validities.insert(domain.to_owned(), not_after);
         }
 

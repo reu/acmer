@@ -17,7 +17,7 @@ use tokio::{
 };
 use tokio_rustls::{server::TlsStream, LazyConfigAcceptor};
 use tokio_stream::{wrappers::UnboundedReceiverStream, Stream, StreamExt};
-use tracing::{debug, debug_span, error, trace};
+use tracing::{debug, error, trace};
 
 use crate::store::{
     AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, MemoryAccountStore,
@@ -93,13 +93,14 @@ impl<S> AcmeAcceptor<S> {
                         .unwrap_or(false);
 
                     let domain = hello.server_name().unwrap_or_default().to_owned();
-                    debug_span!("acceptor", domain = ?domain);
 
                     loop {
                         let mut cert = certs.get_cert(&domain).await;
 
                         if has_acme_tls {
                             if let Some(auth) = auths.get_challenge(&domain).await {
+                                debug!(domain, "answering validation request");
+
                                 let auth = Sha256::new().chain_update(auth).finalize();
 
                                 let cert = rcgen::Certificate::from_params({
@@ -129,10 +130,10 @@ impl<S> AcmeAcceptor<S> {
 
                                 conn.shutdown().await.ok();
 
-                                debug!("answered validation request");
+                                debug!(domain, "answered validation request");
                                 break;
                             } else {
-                                debug!("validation request to unknown domain");
+                                debug!(domain, "validation request of unknown domain");
                             }
                         } else if let Some((key, cert)) = cert.take() {
                             let conn = handshake
@@ -147,17 +148,17 @@ impl<S> AcmeAcceptor<S> {
 
                             let conn = Connection { stream: conn };
 
-                            trace!("certificate found");
+                            trace!(domain, "connection established");
 
                             tx.send(Ok(conn)).ok();
                             break;
                         } else if auths.get_challenge(&domain).await.is_none() {
-                            trace!("starting validation challenge");
+                            trace!(domain = ?domain, "starting validation challenge");
 
                             let mut auth = match auths.lock(&domain).await {
                                 Ok(lock) => lock,
                                 Err(_) => {
-                                    trace!("domain already being validated");
+                                    trace!(domain, "domain already being validated");
                                     tokio::time::sleep(Duration::from_secs(10)).await;
                                     continue;
                                 }
@@ -174,7 +175,7 @@ impl<S> AcmeAcceptor<S> {
                                         acme_client.existing_account_from_private_key(pk).await
                                     }
                                     None => {
-                                        error!("account private key not found");
+                                        error!(domain, "account private key not found");
                                         break;
                                     }
                                 };
@@ -182,7 +183,7 @@ impl<S> AcmeAcceptor<S> {
                                 match account {
                                     Ok(acc) => acc,
                                     Err(err) => {
-                                        error!(error = ?err, "account not found");
+                                        error!(domain, error = ?err, "account not found");
                                         break;
                                     }
                                 }
@@ -228,7 +229,7 @@ impl<S> AcmeAcceptor<S> {
                                     .await
                                     .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-                                trace!(status = ?order.status(), "acme order status");
+                                trace!(domain, status = ?order.status(), "acme order status");
                                 match order.status() {
                                     OrderStatus::Pending | OrderStatus::Processing => {
                                         tokio::time::sleep(Duration::from_secs(3)).await;
