@@ -145,10 +145,7 @@ impl<S> AcmeAcceptor<S> {
                                 ))
                                 .await?;
 
-                            let conn = Connection {
-                                stream: conn,
-                                sni: domain.to_owned(),
-                            };
+                            let conn = Connection { stream: conn };
 
                             trace!("certificate found");
 
@@ -298,12 +295,11 @@ impl<S> Stream for AcmeAcceptor<S> {
 
 pub struct Connection<S> {
     stream: TlsStream<S>,
-    sni: String,
 }
 
 impl<S> Connection<S> {
     pub fn sni(&self) -> &str {
-        &self.sni
+        self.stream.get_ref().1.sni_hostname().unwrap_or_default()
     }
 
     pub fn into_inner(self) -> TlsStream<S> {
