@@ -17,6 +17,7 @@ use tokio::{
 };
 use tokio_rustls::{server::TlsStream, LazyConfigAcceptor};
 use tokio_stream::{wrappers::UnboundedReceiverStream, Stream, StreamExt};
+use tracing::{debug, debug_span, error, trace};
 
 use crate::store::{
     AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, MemoryAccountStore,
@@ -92,6 +93,7 @@ impl<S> AcmeAcceptor<S> {
                         .unwrap_or(false);
 
                     let domain = hello.server_name().unwrap_or_default().to_owned();
+                    debug_span!("acceptor", domain = ?domain);
 
                     loop {
                         let mut cert = certs.get_cert(&domain).await;
@@ -126,7 +128,11 @@ impl<S> AcmeAcceptor<S> {
                                     .await?;
 
                                 conn.shutdown().await.ok();
+
+                                debug!("answered validation request");
                                 break;
+                            } else {
+                                debug!("validation request to unknown domain");
                             }
                         } else if let Some((key, cert)) = cert.take() {
                             let conn = handshake
@@ -135,7 +141,7 @@ impl<S> AcmeAcceptor<S> {
                                         .with_safe_defaults()
                                         .with_no_client_auth()
                                         .with_single_cert(cert, key)
-                                        .unwrap(),
+                                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
                                 ))
                                 .await?;
 
@@ -144,67 +150,115 @@ impl<S> AcmeAcceptor<S> {
                                 sni: domain.to_owned(),
                             };
 
+                            trace!("certificate found");
+
                             tx.send(Ok(conn)).ok();
                             break;
                         } else if auths.get_challenge(&domain).await.is_none() {
+                            trace!("starting validation challenge");
+
                             let mut auth = match auths.lock(&domain).await {
                                 Ok(lock) => lock,
                                 Err(_) => {
+                                    trace!("domain already being validated");
                                     tokio::time::sleep(Duration::from_secs(10)).await;
                                     continue;
                                 }
                             };
 
-                            let acme_account = accounts
-                                .get_account(acme_client.directory_url())
+                            let acme_account = {
+                                let account_pk = accounts
+                                    .get_account(acme_client.directory_url())
+                                    .await
+                                    .and_then(|acc| papaleguas::PrivateKey::from_der(&acc.0).ok());
+
+                                let account = match account_pk {
+                                    Some(pk) => {
+                                        acme_client.existing_account_from_private_key(pk).await
+                                    }
+                                    None => {
+                                        error!("account private key not found");
+                                        break;
+                                    }
+                                };
+
+                                match account {
+                                    Ok(acc) => acc,
+                                    Err(err) => {
+                                        error!(error = ?err, "account not found");
+                                        break;
+                                    }
+                                }
+                            };
+
+                            let order = acme_account
+                                .new_order()
+                                .dns(&domain)
+                                .send()
                                 .await
-                                .unwrap();
+                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-                            let acme_account = acme_client
-                                .existing_account_from_private_key(
-                                    papaleguas::PrivateKey::from_der(&acme_account.0).unwrap(),
-                                )
+                            let authorizations = order
+                                .authorizations()
                                 .await
-                                .unwrap();
-
-                            let order = acme_account.new_order().dns(&domain).send().await.unwrap();
-
-                            let authorizations = order.authorizations().await.unwrap();
+                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
                             let challenge = authorizations
                                 .iter()
                                 .find_map(|auth| auth.tls_alpn01_challenge())
-                                .unwrap();
+                                .ok_or(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    "tls alpn01 challenge not found",
+                                ))?;
 
-                            auth.put_challenge(challenge.key_authorization().unwrap())
-                                .await;
+                            let key_auth = challenge
+                                .key_authorization()
+                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+                            auth.put_challenge(key_auth).await;
 
                             drop(auth);
 
-                            challenge.validate().await.unwrap();
+                            challenge
+                                .validate()
+                                .await
+                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
                             let key = papaleguas::PrivateKey::random_ec_key(rand::thread_rng());
                             let cert = loop {
-                                let order = acme_account.find_order(order.url()).await.unwrap();
+                                let order = acme_account
+                                    .find_order(order.url())
+                                    .await
+                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+                                trace!(status = ?order.status(), "acme order status");
                                 match order.status() {
                                     OrderStatus::Pending | OrderStatus::Processing => {
                                         tokio::time::sleep(Duration::from_secs(3)).await;
                                     }
                                     OrderStatus::Ready => {
-                                        order.finalize(&key).await.unwrap();
+                                        order.finalize(&key).await.map_err(|err| {
+                                            io::Error::new(io::ErrorKind::Other, err)
+                                        })?;
                                     }
-                                    OrderStatus::Valid => break order.certificate().await.unwrap(),
+                                    OrderStatus::Valid => {
+                                        break order.certificate().await.map_err(|err| {
+                                            io::Error::new(io::ErrorKind::Other, err)
+                                        })?;
+                                    }
                                     OrderStatus::Invalid => {
                                         return Err(io::Error::new(
                                             io::ErrorKind::Other,
-                                            "Invalid order",
+                                            "invalid order",
                                         ))
                                     }
                                 }
                             };
 
-                            let key = key.to_der().unwrap();
-                            let key = PrivateKey(key);
+                            let key = key
+                                .to_der()
+                                .map(PrivateKey)
+                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
                             let cert = pemfile::read_all(&mut std::io::Cursor::new(cert))?;
                             let cert = cert
