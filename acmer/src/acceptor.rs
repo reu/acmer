@@ -95,7 +95,7 @@ impl<S> AcmeAcceptor<S> {
                     let domain = hello.server_name().unwrap_or_default().to_owned();
 
                     loop {
-                        let mut cert = certs.get_cert(&domain).await;
+                        let mut cert = certs.get_cert(&domain).await?;
 
                         if has_acme_tls {
                             if let Some(auth) = auths.get_challenge(&domain).await {
@@ -271,7 +271,7 @@ impl<S> AcmeAcceptor<S> {
                                 .map(Certificate)
                                 .collect::<Vec<Certificate>>();
 
-                            certs.put_cert(&domain, key, cert).await;
+                            certs.put_cert(&domain, key, cert).await?;
 
                             continue;
                         }

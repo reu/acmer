@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use rustls::{Certificate, PrivateKey};
 use tokio::{
-    join,
+    io,
     sync::{Mutex, OwnedRwLockWriteGuard, RwLock},
+    try_join,
 };
 use tracing::trace;
 use x509_cert::{der::Decode, Certificate as X509Certificate};
@@ -22,8 +23,13 @@ mod fs;
 
 #[async_trait]
 pub trait CertStore: Send + Sync {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)>;
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>);
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>>;
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()>;
 }
 
 #[async_trait]
@@ -50,23 +56,35 @@ pub trait AuthChallengeDomainLock: Send + Sync {
 
 #[async_trait]
 impl CertStore for RwLock<HashMap<String, (PrivateKey, Vec<Certificate>)>> {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
-        self.read().await.get(domain).cloned()
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
+        Ok(self.read().await.get(domain).cloned())
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
         self.write().await.insert(domain.to_owned(), (key, cert));
+        Ok(())
     }
 }
 
 #[async_trait]
 impl CertStore for DashMap<String, (PrivateKey, Vec<Certificate>)> {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
-        Some(self.get(domain)?.value().clone())
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
+        Ok(self.get(domain).map(|item| item.value().clone()))
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
         self.insert(domain.to_owned(), (key, cert));
+        Ok(())
     }
 }
 
@@ -75,12 +93,17 @@ pub struct MemoryCertStore(DashMap<String, (PrivateKey, Vec<Certificate>)>);
 
 #[async_trait]
 impl CertStore for MemoryCertStore {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
         self.0.get_cert(domain).await
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
-        self.0.put_cert(domain, key, cert).await;
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
+        self.0.put_cert(domain, key, cert).await
     }
 }
 
@@ -164,26 +187,34 @@ impl<C: CertStore + 'static> CachedCertStoreExt for C {
 
 #[async_trait]
 impl CertStore for CachedCertStore {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
-        if let Some(cached) = self.cache.get_cert(domain).await {
-            return Some(cached);
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
+        if let Some(cached) = self.cache.get_cert(domain).await? {
+            return Ok(Some(cached));
         }
 
-        if let Some((key, cert)) = self.store.get_cert(domain).await {
+        if let Some((key, cert)) = self.store.get_cert(domain).await? {
             trace!(domain, "cert not cached, caching now");
-            self.cache.put_cert(domain, key.clone(), cert.clone()).await;
-            return Some((key, cert));
+            self.cache
+                .put_cert(domain, key.clone(), cert.clone())
+                .await?;
+            return Ok(Some((key, cert)));
         }
 
-        None
+        Ok(None)
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
         trace!(domain, "caching cert");
-        join!(
+        try_join!(
             self.store.put_cert(domain, key.clone(), cert.clone()),
             self.cache.put_cert(domain, key, cert),
-        );
+        )?;
+        Ok(())
     }
 }
 
@@ -213,8 +244,7 @@ impl<C: CertStore + 'static> CertExpirationTimeStoreExt for C {
 
 #[async_trait]
 impl CertStore for CertExpirationTimeStore {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
-        let (key, cert) = self.store.get_cert(domain).await?;
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
         match self.validities.get(domain) {
             Some(validity) if validity.value() < &SystemTime::now() => {
                 let valid_until = validity
@@ -223,13 +253,18 @@ impl CertStore for CertExpirationTimeStore {
                     .unwrap_or_default()
                     .as_secs();
                 trace!(domain, until = valid_until, "cert is expired");
-                None
+                Ok(None)
             }
-            _ => Some((key, cert)),
+            _ => self.store.get_cert(domain).await,
         }
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
         if let Some(not_after) = cert
             .iter()
             .filter_map(|cert| X509Certificate::from_der(&cert.0).ok())
@@ -286,11 +321,14 @@ mod test {
         let pkey = PrivateKey(b"pkey".to_vec());
         let cert = vec![Certificate(b"cert".to_vec())];
 
-        assert!(store.get_cert("lol.wut").await.is_none());
+        assert!(store.get_cert("lol.wut").await.unwrap().is_none());
 
-        store.put_cert("lol.wut", pkey.clone(), cert.clone()).await;
+        store
+            .put_cert("lol.wut", pkey.clone(), cert.clone())
+            .await
+            .unwrap();
 
-        let (stored_key, stored_cert) = store.get_cert("lol.wut").await.unwrap();
+        let (stored_key, stored_cert) = store.get_cert("lol.wut").await.unwrap().unwrap();
         assert_eq!(stored_key, pkey);
         assert_eq!(stored_cert, cert);
     }

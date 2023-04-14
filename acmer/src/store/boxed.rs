@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use rustls::{Certificate, PrivateKey};
+use tokio::io;
 
 use super::{
     AccountStore, AuthChallengeDomainLock, AuthChallengeStore, AuthChallengeStoreLockError,
@@ -16,11 +17,16 @@ impl BoxedCertStore {
 
 #[async_trait]
 impl CertStore for BoxedCertStore {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
         self.0.get_cert(domain).await
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
         self.0.put_cert(domain, key, cert).await
     }
 }

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use pem_rfc7468 as pem;
 use rustls::{Certificate, PrivateKey};
 use rustls_pemfile as pemfile;
-use tokio::{fs, try_join};
+use tokio::{fs, io, try_join};
 
 use super::{AccountStore, CertStore};
 
@@ -22,15 +22,14 @@ impl FileStore {
 
 #[async_trait]
 impl CertStore for FileStore {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
         let key = self.directory.join(format!("{domain}.key"));
         let cert = self.directory.join(format!("{domain}.crt"));
 
-        let (key, cert) = try_join!(fs::read(key), fs::read(cert)).ok()?;
+        let (key, cert) = try_join!(fs::read(key), fs::read(cert))?;
 
         let key = PrivateKey(key);
-        let cert = pemfile::read_all(&mut std::io::Cursor::new(cert))
-            .ok()?
+        let cert = pemfile::read_all(&mut std::io::Cursor::new(cert))?
             .into_iter()
             .filter_map(|item| match item {
                 pemfile::Item::X509Certificate(der) => Some(der),
@@ -39,10 +38,15 @@ impl CertStore for FileStore {
             .map(Certificate)
             .collect::<Vec<Certificate>>();
 
-        Some((key, cert))
+        Ok(Some((key, cert)))
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
         let key_path = self.directory.join(format!("{domain}.key"));
         let cert_path = self.directory.join(format!("{domain}.crt"));
 
@@ -50,9 +54,10 @@ impl CertStore for FileStore {
             .into_iter()
             .map(|cert| pem::encode_string("CERTIFICATE", pem::LineEnding::default(), &cert.0))
             .collect::<Result<String, _>>()
-            .unwrap();
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
-        try_join!(fs::write(key_path, key.0), fs::write(cert_path, cert)).unwrap();
+        try_join!(fs::write(key_path, key.0), fs::write(cert_path, cert))?;
+        Ok(())
     }
 }
 
@@ -88,11 +93,16 @@ impl CertFileStore {
 
 #[async_trait]
 impl CertStore for CertFileStore {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
         self.0.get_cert(domain).await
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
         self.0.put_cert(domain, key, cert).await
     }
 }

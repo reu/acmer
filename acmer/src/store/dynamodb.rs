@@ -11,6 +11,7 @@ use aws_sdk_dynamodb::{
         AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
         ScalarAttributeType, TableStatus, TimeToLiveSpecification,
     },
+    output::GetItemOutput,
     types::{Blob, SdkError},
     Client,
 };
@@ -18,7 +19,7 @@ use pem_rfc7468 as pem;
 use rand::Rng;
 use rustls::{Certificate, PrivateKey};
 use rustls_pemfile as pemfile;
-use tokio::time::sleep;
+use tokio::{io, time::sleep};
 
 use super::{
     AccountStore, AuthChallengeDomainLock, AuthChallengeStore, AuthChallengeStoreLockError,
@@ -145,7 +146,7 @@ impl DynamodbStore {
 
 #[async_trait]
 impl CertStore for DynamodbStore {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
         let record = self
             .client
             .get_item()
@@ -153,37 +154,51 @@ impl CertStore for DynamodbStore {
             .key("hostname", AttributeValue::S(domain.to_string()))
             .send()
             .await
-            .ok()?;
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-        let key = record
-            .item()?
-            .get("pkey")?
-            .as_b()
-            .ok()
-            .cloned()?
-            .into_inner();
+        fn get_key(record: &GetItemOutput) -> Option<PrivateKey> {
+            Some(PrivateKey(
+                record
+                    .item()?
+                    .get("pkey")?
+                    .as_b()
+                    .ok()
+                    .cloned()?
+                    .into_inner(),
+            ))
+        }
 
-        let cert = record.item()?.get("cert")?.as_s().ok()?;
+        fn get_cert(record: &GetItemOutput) -> Option<&str> {
+            Some(record.item()?.get("cert")?.as_s().ok()?)
+        }
 
-        let cert = pemfile::read_all(&mut std::io::Cursor::new(cert))
-            .ok()?
-            .into_iter()
-            .filter_map(|item| match item {
-                pemfile::Item::X509Certificate(der) => Some(der),
-                _ => None,
-            })
-            .map(Certificate)
-            .collect::<Vec<Certificate>>();
-
-        Some((PrivateKey(key), cert))
+        match (get_key(&record), get_cert(&record)) {
+            (Some(key), Some(cert)) => {
+                let cert = pemfile::read_all(&mut std::io::Cursor::new(cert))?
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        pemfile::Item::X509Certificate(der) => Some(der),
+                        _ => None,
+                    })
+                    .map(Certificate)
+                    .collect::<Vec<Certificate>>();
+                Ok(Some((key, cert)))
+            }
+            _ => Ok(None),
+        }
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
         let cert = cert
             .into_iter()
             .map(|cert| pem::encode_string("CERTIFICATE", pem::LineEnding::default(), &cert.0))
             .collect::<Result<String, _>>()
-            .unwrap();
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
         self.client
             .put_item()
@@ -193,7 +208,9 @@ impl CertStore for DynamodbStore {
             .item("cert", AttributeValue::S(cert))
             .send()
             .await
-            .unwrap();
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+
+        Ok(())
     }
 }
 
@@ -360,11 +377,16 @@ impl CertDynamodbStore {
 
 #[async_trait]
 impl CertStore for CertDynamodbStore {
-    async fn get_cert(&self, domain: &str) -> Option<(PrivateKey, Vec<Certificate>)> {
+    async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
         self.0.get_cert(domain).await
     }
 
-    async fn put_cert(&self, domain: &str, key: PrivateKey, cert: Vec<Certificate>) {
+    async fn put_cert(
+        &self,
+        domain: &str,
+        key: PrivateKey,
+        cert: Vec<Certificate>,
+    ) -> io::Result<()> {
         self.0.put_cert(domain, key, cert).await
     }
 }
