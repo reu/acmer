@@ -161,32 +161,34 @@ impl AuthChallengeDomainLock for MemoryAuthChallengeStoreGuard {
     }
 }
 
-pub struct CachedCertStore {
-    store: Box<dyn CertStore>,
+pub struct CachedCertStore<S> {
+    store: S,
     cache: MemoryCertStore,
 }
 
-impl CachedCertStore {
-    pub fn new(store: impl CertStore + 'static) -> Self {
+impl<S: CertStore> CachedCertStore<S> {
+    pub fn new(store: S) -> Self {
         CachedCertStore {
-            store: Box::new(store),
+            store,
             cache: MemoryCertStore::default(),
         }
     }
 }
 
 pub trait CachedCertStoreExt {
-    fn cached(self) -> CachedCertStore;
+    fn cached(self) -> CachedCertStore<Self>
+    where
+        Self: Sized;
 }
 
 impl<C: CertStore + 'static> CachedCertStoreExt for C {
-    fn cached(self) -> CachedCertStore {
+    fn cached(self) -> CachedCertStore<Self> {
         CachedCertStore::new(self)
     }
 }
 
 #[async_trait]
-impl CertStore for CachedCertStore {
+impl<S: CertStore> CertStore for CachedCertStore<S> {
     async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
         if let Some(cached) = self.cache.get_cert(domain).await? {
             return Ok(Some(cached));
@@ -218,32 +220,34 @@ impl CertStore for CachedCertStore {
     }
 }
 
-pub struct CertExpirationTimeStore {
-    store: Box<dyn CertStore>,
+pub struct CertExpirationTimeStore<S> {
+    store: S,
     validities: DashMap<String, SystemTime>,
 }
 
-impl CertExpirationTimeStore {
-    pub fn new(store: impl CertStore + 'static) -> Self {
+impl<S: CertStore> CertExpirationTimeStore<S> {
+    pub fn new(store: S) -> Self {
         CertExpirationTimeStore {
-            store: Box::new(store),
+            store,
             validities: DashMap::new(),
         }
     }
 }
 
 pub trait CertExpirationTimeStoreExt {
-    fn with_validity_check(self) -> CertExpirationTimeStore;
+    fn with_validity_check(self) -> CertExpirationTimeStore<Self>
+    where
+        Self: Sized;
 }
 
 impl<C: CertStore + 'static> CertExpirationTimeStoreExt for C {
-    fn with_validity_check(self) -> CertExpirationTimeStore {
+    fn with_validity_check(self) -> CertExpirationTimeStore<Self> {
         CertExpirationTimeStore::new(self)
     }
 }
 
 #[async_trait]
-impl CertStore for CertExpirationTimeStore {
+impl<S: CertStore> CertStore for CertExpirationTimeStore<S> {
     async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
         match self.validities.get(domain) {
             Some(validity) if validity.value() < &SystemTime::now() => {
