@@ -163,14 +163,14 @@ impl AuthChallengeDomainLock for MemoryAuthChallengeStoreGuard {
 
 pub struct CachedCertStore {
     store: Box<dyn CertStore>,
-    cache: Box<dyn CertStore>,
+    cache: MemoryCertStore,
 }
 
 impl CachedCertStore {
     pub fn new(store: impl CertStore + 'static) -> Self {
         CachedCertStore {
             store: Box::new(store),
-            cache: Box::new(RwLock::new(HashMap::new())),
+            cache: MemoryCertStore::default(),
         }
     }
 }
