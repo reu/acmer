@@ -1,10 +1,12 @@
 use std::{
+    collections::HashSet,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
+use dashmap::DashSet;
 use papaleguas::{AcmeClient, OrderStatus};
 use rustls::{server::Acceptor, Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile as pemfile;
@@ -43,7 +45,8 @@ impl<S> Drop for AcmeAcceptor<S> {
 
 impl AcmeAcceptor<TcpStream> {
     pub fn builder(
-    ) -> AcmeAcceptorBuilder<MemoryAuthChallengeStore, MemoryCertStore, MemoryAccountStore> {
+    ) -> AcmeAcceptorBuilder<MemoryAuthChallengeStore, MemoryCertStore, MemoryAccountStore, bool>
+    {
         AcmeAcceptorBuilder::default()
     }
 }
@@ -55,6 +58,7 @@ impl<S> AcmeAcceptor<S> {
         certs: impl CertStore + 'static,
         auths: impl AuthChallengeStore + 'static,
         accounts: impl AccountStore + 'static,
+        domain_check: impl DomainCheck + 'static,
     ) -> Self
     where
         L: Stream<Item = io::Result<S>>,
@@ -66,6 +70,7 @@ impl<S> AcmeAcceptor<S> {
         let certs = Arc::new(certs);
         let auths = Arc::new(auths);
         let accounts = Arc::new(accounts);
+        let domain_check = Arc::new(domain_check);
 
         #[allow(unreachable_code)]
         let task = tokio::spawn(async move {
@@ -74,6 +79,7 @@ impl<S> AcmeAcceptor<S> {
                 let certs = certs.clone();
                 let accounts = accounts.clone();
                 let acme_client = acme_client.clone();
+                let domain_check = domain_check.clone();
 
                 let tx = tx.clone();
 
@@ -93,6 +99,13 @@ impl<S> AcmeAcceptor<S> {
                         .unwrap_or(false);
 
                     let domain = hello.server_name().unwrap_or_default().to_owned();
+
+                    if !domain_check.allow_domain(&domain) {
+                        return io::Result::Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "domain not allowed",
+                        ));
+                    }
 
                     loop {
                         let mut cert = certs.get_cert(&domain).await?;
@@ -342,5 +355,61 @@ where
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
+pub trait DomainCheck: Send + Sync {
+    fn allow_domain(&self, domain: &str) -> bool;
+}
+
+impl<F> DomainCheck for F
+where
+    F: Fn(&str) -> bool,
+    F: Send + Sync,
+{
+    fn allow_domain(&self, domain: &str) -> bool {
+        self(domain)
+    }
+}
+
+impl DomainCheck for &str {
+    fn allow_domain(&self, domain: &str) -> bool {
+        self == &domain
+    }
+}
+
+impl DomainCheck for String {
+    fn allow_domain(&self, domain: &str) -> bool {
+        self == domain
+    }
+}
+
+impl DomainCheck for bool {
+    fn allow_domain(&self, _domain: &str) -> bool {
+        *self
+    }
+}
+
+impl<const N: usize> DomainCheck for &[&str; N] {
+    fn allow_domain(&self, domain: &str) -> bool {
+        self.contains(&domain)
+    }
+}
+
+impl DomainCheck for HashSet<String> {
+    fn allow_domain(&self, domain: &str) -> bool {
+        self.contains(domain)
+    }
+}
+
+impl DomainCheck for DashSet<String> {
+    fn allow_domain(&self, domain: &str) -> bool {
+        self.contains(domain)
+    }
+}
+
+impl DomainCheck for Arc<DashSet<String>> {
+    fn allow_domain(&self, domain: &str) -> bool {
+        self.contains(domain)
     }
 }

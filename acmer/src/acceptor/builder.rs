@@ -14,20 +14,21 @@ use crate::store::{
     MemoryAuthChallengeStore, MemoryCertStore, SingleAccountStore,
 };
 
-use super::AcmeAcceptor;
+use super::{AcmeAcceptor, DomainCheck};
 
 #[derive(Debug)]
-pub struct AcmeAcceptorBuilder<Auth, Cert, Acc> {
+pub struct AcmeAcceptorBuilder<Auth, Cert, Acc, Domain> {
     acme: Option<AcmeClient>,
     account_pk: Option<PrivateKey>,
     contacts: Option<Vec<String>>,
     challenge_store: Auth,
     cert_store: Cert,
     account_store: Acc,
+    domain_checker: Domain,
 }
 
 impl Default
-    for AcmeAcceptorBuilder<MemoryAuthChallengeStore, MemoryCertStore, MemoryAccountStore>
+    for AcmeAcceptorBuilder<MemoryAuthChallengeStore, MemoryCertStore, MemoryAccountStore, bool>
 {
     fn default() -> Self {
         Self {
@@ -37,15 +38,17 @@ impl Default
             challenge_store: MemoryAuthChallengeStore::default(),
             cert_store: MemoryCertStore::default(),
             account_store: MemoryAccountStore::default(),
+            domain_checker: true,
         }
     }
 }
 
-impl<Auth, Cert, Acc> AcmeAcceptorBuilder<Auth, Cert, Acc>
+impl<Auth, Cert, Acc, Domain> AcmeAcceptorBuilder<Auth, Cert, Acc, Domain>
 where
     Cert: CertStore + 'static,
     Auth: AuthChallengeStore + 'static,
     Acc: AccountStore + 'static,
+    Domain: DomainCheck + 'static,
 {
     pub fn with_contact(self, contact: impl Into<String>) -> Self {
         let mut contacts = self.contacts.unwrap_or_default();
@@ -56,10 +59,25 @@ where
         }
     }
 
+    pub fn allowed_domains<D>(self, domain_checker: D) -> AcmeAcceptorBuilder<Auth, Cert, Acc, D>
+    where
+        D: DomainCheck + 'static,
+    {
+        AcmeAcceptorBuilder {
+            acme: self.acme,
+            account_pk: self.account_pk,
+            contacts: self.contacts,
+            challenge_store: self.challenge_store,
+            cert_store: self.cert_store,
+            account_store: self.account_store,
+            domain_checker,
+        }
+    }
+
     pub fn with_auth_challenge_store<A>(
         self,
         challenge_store: A,
-    ) -> AcmeAcceptorBuilder<A, Cert, Acc>
+    ) -> AcmeAcceptorBuilder<A, Cert, Acc, Domain>
     where
         Auth: AuthChallengeStore + 'static,
     {
@@ -70,10 +88,11 @@ where
             challenge_store,
             cert_store: self.cert_store,
             account_store: self.account_store,
+            domain_checker: self.domain_checker,
         }
     }
 
-    pub fn with_cert_store<C>(self, cert_store: C) -> AcmeAcceptorBuilder<Auth, C, Acc>
+    pub fn with_cert_store<C>(self, cert_store: C) -> AcmeAcceptorBuilder<Auth, C, Acc, Domain>
     where
         C: CertStore + 'static,
     {
@@ -84,10 +103,14 @@ where
             challenge_store: self.challenge_store,
             cert_store,
             account_store: self.account_store,
+            domain_checker: self.domain_checker,
         }
     }
 
-    pub fn with_account_store<A>(self, account_store: A) -> AcmeAcceptorBuilder<Auth, Cert, A>
+    pub fn with_account_store<A>(
+        self,
+        account_store: A,
+    ) -> AcmeAcceptorBuilder<Auth, Cert, A, Domain>
     where
         A: AccountStore + 'static,
     {
@@ -98,6 +121,7 @@ where
             challenge_store: self.challenge_store,
             cert_store: self.cert_store,
             account_store,
+            domain_checker: self.domain_checker,
         }
     }
 
@@ -153,6 +177,7 @@ where
             self.cert_store,
             self.challenge_store,
             account_store,
+            self.domain_checker,
         )
     }
 
@@ -207,6 +232,7 @@ where
             self.cert_store,
             self.challenge_store,
             account_store,
+            self.domain_checker,
         )
     }
 }
