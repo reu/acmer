@@ -189,6 +189,9 @@ impl<S> AcmeAcceptor<S> {
                                 }
                             };
 
+                            // TODO: check if there is a pending order for this domain before
+                            // creating a new one
+
                             let order = acme_account
                                 .new_order()
                                 .dns(&domain)
