@@ -151,7 +151,12 @@ where
             let account_store = self.account_store;
             let acme_directory = acme.directory_url();
 
-            if account_store.get_account(acme_directory).await.is_none() {
+            if account_store
+                .get_account(acme_directory)
+                .await
+                .unwrap()
+                .is_none()
+            {
                 let account = acme
                     .new_account()
                     .contacts(contacts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
@@ -163,7 +168,8 @@ where
 
                 account_store
                     .put_account(acme_directory, PrivateKey(account.key().to_der().unwrap()))
-                    .await;
+                    .await
+                    .unwrap();
             }
 
             account_store.boxed()
@@ -206,7 +212,12 @@ where
             let account_store = self.account_store;
             let acme_directory = acme.directory_url();
 
-            if account_store.get_account(acme_directory).await.is_none() {
+            if account_store
+                .get_account(acme_directory)
+                .await
+                .unwrap()
+                .is_none()
+            {
                 let account = acme
                     .new_account()
                     .contacts(contacts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
@@ -218,7 +229,8 @@ where
 
                 account_store
                     .put_account(acme_directory, PrivateKey(account.key().to_der().unwrap()))
-                    .await;
+                    .await
+                    .unwrap();
             }
 
             account_store.boxed()

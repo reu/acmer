@@ -180,7 +180,7 @@ impl<S> AcmeAcceptor<S> {
                             let acme_account = {
                                 let account_pk = accounts
                                     .get_account(acme_client.directory_url())
-                                    .await
+                                    .await?
                                     .and_then(|acc| papaleguas::PrivateKey::from_der(&acc.0).ok());
 
                                 let account = match account_pk {

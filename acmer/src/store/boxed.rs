@@ -61,11 +61,11 @@ impl<A: AccountStore + 'static> BoxedAccountStoreExt for A {
 
 #[async_trait]
 impl AccountStore for BoxedAccountStore {
-    async fn get_account(&self, domain: &str) -> Option<PrivateKey> {
+    async fn get_account(&self, domain: &str) -> io::Result<Option<PrivateKey>> {
         self.0.get_account(domain).await
     }
 
-    async fn put_account(&self, domain: &str, key: PrivateKey) {
+    async fn put_account(&self, domain: &str, key: PrivateKey) -> io::Result<()> {
         self.0.put_account(domain, key).await
     }
 }

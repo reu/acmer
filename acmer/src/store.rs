@@ -34,8 +34,8 @@ pub trait CertStore: Send + Sync {
 
 #[async_trait]
 pub trait AccountStore: Send + Sync {
-    async fn get_account(&self, directory: &str) -> Option<PrivateKey>;
-    async fn put_account(&self, directory: &str, key: PrivateKey);
+    async fn get_account(&self, directory: &str) -> io::Result<Option<PrivateKey>>;
+    async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()>;
 }
 
 #[async_trait]
@@ -112,12 +112,13 @@ pub struct MemoryAccountStore(RwLock<HashMap<String, PrivateKey>>);
 
 #[async_trait]
 impl AccountStore for MemoryAccountStore {
-    async fn get_account(&self, directory: &str) -> Option<PrivateKey> {
-        self.0.read().await.get(directory).cloned()
+    async fn get_account(&self, directory: &str) -> io::Result<Option<PrivateKey>> {
+        Ok(self.0.read().await.get(directory).cloned())
     }
 
-    async fn put_account(&self, directory: &str, key: PrivateKey) {
+    async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
         self.0.write().await.insert(directory.to_owned(), key);
+        Ok(())
     }
 }
 
@@ -302,11 +303,13 @@ impl SingleAccountStore {
 
 #[async_trait]
 impl AccountStore for SingleAccountStore {
-    async fn get_account(&self, _directory: &str) -> Option<PrivateKey> {
-        Some(self.0.clone())
+    async fn get_account(&self, _directory: &str) -> io::Result<Option<PrivateKey>> {
+        Ok(Some(self.0.clone()))
     }
 
-    async fn put_account(&self, _directory: &str, _key: PrivateKey) {}
+    async fn put_account(&self, _directory: &str, _key: PrivateKey) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

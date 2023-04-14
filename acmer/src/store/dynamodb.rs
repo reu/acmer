@@ -216,23 +216,21 @@ impl CertStore for DynamodbStore {
 
 #[async_trait]
 impl AccountStore for DynamodbStore {
-    async fn get_account(&self, directory: &str) -> Option<PrivateKey> {
-        self.client
+    async fn get_account(&self, directory: &str) -> io::Result<Option<PrivateKey>> {
+        Ok(self
+            .client
             .get_item()
             .table_name(&self.table_name)
             .key("directory", AttributeValue::S(directory.to_string()))
             .send()
             .await
-            .ok()?
-            .item()?
-            .get("pkey")?
-            .as_b()
-            .ok()
-            .cloned()
-            .map(|key| PrivateKey(key.into_inner()))
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+            .item()
+            .and_then(|item| item.get("pkey")?.as_b().ok().cloned())
+            .map(|key| PrivateKey(key.into_inner())))
     }
 
-    async fn put_account(&self, directory: &str, key: PrivateKey) {
+    async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
         self.client
             .put_item()
             .table_name(&self.table_name)
@@ -240,7 +238,9 @@ impl AccountStore for DynamodbStore {
             .item("pkey", AttributeValue::B(Blob::new(key.0)))
             .send()
             .await
-            .unwrap();
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+        Ok(())
     }
 }
 
@@ -410,11 +410,11 @@ impl AccountDynamodbStore {
 
 #[async_trait]
 impl AccountStore for AccountDynamodbStore {
-    async fn get_account(&self, directory: &str) -> Option<PrivateKey> {
+    async fn get_account(&self, directory: &str) -> io::Result<Option<PrivateKey>> {
         self.0.get_account(directory).await
     }
 
-    async fn put_account(&self, directory: &str, key: PrivateKey) {
+    async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
         self.0.put_account(directory, key).await
     }
 }

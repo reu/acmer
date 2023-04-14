@@ -63,23 +63,27 @@ impl CertStore for FileStore {
 
 #[async_trait]
 impl AccountStore for FileStore {
-    async fn get_account(&self, directory: &str) -> Option<PrivateKey> {
+    async fn get_account(&self, directory: &str) -> io::Result<Option<PrivateKey>> {
         let path = self.directory.join(format!("account.{directory}.key"));
-        let key = fs::read(path).await.ok()?;
+        let key = fs::read(path).await?;
 
-        pem::decode_vec(&key)
+        let key = pem::decode_vec(&key)
             .ok()
             .and_then(|(label, key)| match label {
                 "PRIVATE KEY" => Some(key),
                 _ => None,
             })
-            .map(PrivateKey)
+            .map(PrivateKey);
+
+        Ok(key)
     }
 
-    async fn put_account(&self, directory: &str, key: PrivateKey) {
+    async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
         let path = self.directory.join(format!("account.{directory}.key"));
-        let key = pem::encode_string("PRIVATE KEY", pem::LineEnding::default(), &key.0).unwrap();
-        fs::write(path, key).await.ok();
+        let key = pem::encode_string("PRIVATE KEY", pem::LineEnding::default(), &key.0)
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        fs::write(path, key).await?;
+        Ok(())
     }
 }
 
@@ -117,11 +121,11 @@ impl AccountFileStore {
 
 #[async_trait]
 impl AccountStore for AccountFileStore {
-    async fn get_account(&self, directory: &str) -> Option<PrivateKey> {
+    async fn get_account(&self, directory: &str) -> io::Result<Option<PrivateKey>> {
         self.0.get_account(directory).await
     }
 
-    async fn put_account(&self, directory: &str, key: PrivateKey) {
+    async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
         self.0.put_account(directory, key).await
     }
 }
@@ -139,7 +143,7 @@ mod test {
             .to_der()
             .map(PrivateKey)
             .unwrap();
-        store.put_account("123", key.clone()).await;
-        assert_eq!(store.get_account("123").await, Some(key));
+        store.put_account("123", key.clone()).await.unwrap();
+        assert_eq!(store.get_account("123").await.unwrap(), Some(key));
     }
 }
