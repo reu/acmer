@@ -77,10 +77,11 @@ async fn main() -> io::Result<()> {
                 MemoryAuthChallengeStore::default().boxed()
             },
         )
-        .build_with_tcp_listener(
+        .build_from_tcp_listener(
             TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], https_port))).await?,
         )
-        .await;
+        .await
+        .unwrap();
 
     if let Ok(addr) = env::var("TCP_PROXY_ADDRESS") {
         let addr: SocketAddr = addr.parse().unwrap();

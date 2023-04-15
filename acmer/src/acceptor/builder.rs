@@ -1,7 +1,8 @@
 use papaleguas::AcmeClient;
 use rustls::PrivateKey;
+use thiserror::Error;
 use tokio::{
-    io,
+    io::{self, AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream, UnixListener, UnixStream},
 };
 use tokio_stream::{
@@ -42,6 +43,18 @@ impl Default
         }
     }
 }
+
+#[derive(Debug, Error)]
+pub enum AcmeAcceptorBuilderError {
+    #[error("no ACME account provided")]
+    NoAccountProvided,
+    #[error("failed to create ACME account")]
+    FailToCreateAccount,
+    #[error("failed to fetch ACME directory")]
+    FailToFetchAcmeDirectory,
+}
+
+type BuilderResult<S> = Result<AcmeAcceptor<S>, AcmeAcceptorBuilderError>;
 
 impl<Auth, Cert, Acc, Domain> AcmeAcceptorBuilder<Auth, Cert, Acc, Domain>
 where
@@ -132,17 +145,18 @@ where
         }
     }
 
-    pub async fn build_with_tcp_stream<L>(self, incoming: L) -> AcmeAcceptor<TcpStream>
+    pub async fn build_from_stream<S, I>(self, incoming: S) -> BuilderResult<I>
     where
-        L: Stream<Item = io::Result<TcpStream>>,
-        L: Send + Unpin + 'static,
+        S: Stream<Item = io::Result<I>>,
+        S: Send + Unpin + 'static,
+        I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let acme = match self.acme {
             Some(acme) => acme,
             None => AcmeClient::builder()
                 .build_lets_encrypt_staging()
                 .await
-                .unwrap(),
+                .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)?,
         };
 
         let account_store = if let Some(account_pk) = self.account_pk {
@@ -154,7 +168,7 @@ where
             if account_store
                 .get_account(acme_directory)
                 .await
-                .unwrap()
+                .ok()
                 .is_none()
             {
                 let account = acme
@@ -164,87 +178,48 @@ where
                     .terms_of_service_agreed(true)
                     .send()
                     .await
-                    .unwrap();
+                    .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?;
 
                 account_store
                     .put_account(acme_directory, PrivateKey(account.key().to_der().unwrap()))
                     .await
-                    .unwrap();
+                    .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?;
             }
 
             account_store.boxed()
         } else {
-            panic!("No account provided")
+            return Err(AcmeAcceptorBuilderError::NoAccountProvided);
         };
 
-        AcmeAcceptor::new(
+        Ok(AcmeAcceptor::new(
             acme,
             incoming,
             self.cert_store,
             self.challenge_store,
             account_store,
             self.domain_checker,
-        )
+        ))
+    }
+
+    pub async fn build_from_tcp_stream<L>(self, incoming: L) -> BuilderResult<TcpStream>
+    where
+        L: Stream<Item = io::Result<TcpStream>>,
+        L: Send + Unpin + 'static,
+    {
+        self.build_from_stream(incoming).await
     }
 
     // TODO: return a result instead of panic
-    pub async fn build_with_tcp_listener(self, listener: TcpListener) -> AcmeAcceptor<TcpStream> {
-        self.build_with_tcp_stream(TcpListenerStream::new(listener))
+    pub async fn build_from_tcp_listener(self, listener: TcpListener) -> BuilderResult<TcpStream> {
+        self.build_from_tcp_stream(TcpListenerStream::new(listener))
             .await
     }
 
-    // TODO: return a result instead of panic
-    pub async fn build_with_unix_listener(
+    pub async fn build_from_unix_listener(
         self,
         listener: UnixListener,
-    ) -> AcmeAcceptor<UnixStream> {
-        let acme = match self.acme {
-            Some(acme) => acme,
-            None => AcmeClient::builder()
-                .build_lets_encrypt_staging()
-                .await
-                .unwrap(),
-        };
-
-        let account_store = if let Some(account_pk) = self.account_pk {
-            SingleAccountStore::new(account_pk).boxed()
-        } else if let Some(ref contacts) = self.contacts {
-            let account_store = self.account_store;
-            let acme_directory = acme.directory_url();
-
-            if account_store
-                .get_account(acme_directory)
-                .await
-                .unwrap()
-                .is_none()
-            {
-                let account = acme
-                    .new_account()
-                    .contacts(contacts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-                    .with_auto_generated_ec_key()
-                    .terms_of_service_agreed(true)
-                    .send()
-                    .await
-                    .unwrap();
-
-                account_store
-                    .put_account(acme_directory, PrivateKey(account.key().to_der().unwrap()))
-                    .await
-                    .unwrap();
-            }
-
-            account_store.boxed()
-        } else {
-            panic!("No account provided")
-        };
-
-        AcmeAcceptor::new(
-            acme,
-            UnixListenerStream::new(listener),
-            self.cert_store,
-            self.challenge_store,
-            account_store,
-            self.domain_checker,
-        )
+    ) -> BuilderResult<UnixStream> {
+        self.build_from_stream(UnixListenerStream::new(listener))
+            .await
     }
 }
