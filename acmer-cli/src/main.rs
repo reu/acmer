@@ -1,7 +1,7 @@
-use std::{env, error::Error, net::SocketAddr, sync::Arc};
+use std::{env, net::SocketAddr};
 
 use acmer::{
-    acceptor::{AcmeAcceptor, Connection},
+    acceptor::AcmeAcceptor,
     store::{
         AccountDynamodbStore, AccountFileStore, AuthChallengeDynamodbStore, BoxedAccountStoreExt,
         BoxedAuthChallengeStoreExt, BoxedCertStoreExt, CachedCertStoreExt, CertDynamodbStore,
@@ -10,16 +10,11 @@ use acmer::{
     },
     AcmeClient,
 };
-use hyper::{
-    header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, TRANSFER_ENCODING},
-    http::{uri::Scheme, HeaderValue},
-    server, service, Uri,
-};
-use tokio::{
-    io,
-    net::{TcpListener, TcpStream},
-};
-use tokio_stream::{Stream, StreamExt};
+use tokio::{io, net::TcpListener};
+
+#[cfg(feature = "http")]
+mod http_proxy;
+mod tcp_proxy;
 
 #[tokio::main]
 #[allow(unreachable_code)]
@@ -85,89 +80,17 @@ async fn main() -> io::Result<()> {
 
     if let Ok(addr) = env::var("TCP_PROXY_ADDRESS") {
         let addr: SocketAddr = addr.parse().unwrap();
-        tcp_proxy(addr, acceptor).await;
-    } else if let Ok(uri) = env::var("HTTP_PROXY_ADDRESS") {
-        let uri: Uri = uri.parse().unwrap();
-        http_proxy(uri, acceptor).await;
+        tcp_proxy::proxy(addr, acceptor).await;
+    } else if env::var("HTTP_PROXY_ADDRESS").is_ok() {
+        if cfg!(feature = "http") {
+            #[cfg(feature = "http")]
+            http_proxy::proxy(env::var("HTTP_PROXY_ADDRESS").unwrap(), acceptor).await;
+        } else {
+            panic!("ACMER was not compiled with HTTP proxy support")
+        }
+    } else {
+        panic!("No proxy address informed")
     }
 
     Ok(())
-}
-
-async fn http_proxy<T>(proxy_uri: Uri, conns: impl Stream<Item = io::Result<Connection<T>>>)
-where
-    T: 'static,
-    T: Send + Unpin,
-    T: io::AsyncRead + io::AsyncWrite,
-{
-    let authority = proxy_uri.authority().cloned();
-
-    hyper::Server::builder(server::accept::from_stream(conns))
-        .serve(service::make_service_fn(move |conn: &Connection<_>| {
-            let sni = Arc::new(conn.sni().to_owned());
-            let authority = authority.clone();
-            let http = Arc::new(hyper::Client::new());
-            let https_proto = HeaderValue::from_str("https").unwrap();
-
-            async move {
-                Ok::<_, Box<dyn Error + Send + Sync>>(service::service_fn(move |mut req| {
-                    let sni = sni.clone();
-                    let http = http.clone();
-                    let authority = authority.clone();
-                    let https_proto = https_proto.clone();
-
-                    async move {
-                        let http = http.clone();
-
-                        for key in &[
-                            CONTENT_LENGTH,
-                            TRANSFER_ENCODING,
-                            ACCEPT_ENCODING,
-                            CONTENT_ENCODING,
-                        ] {
-                            req.headers_mut().remove(key);
-                        }
-
-                        if req.uri().host() != Some(&sni) {
-                            return Err("Host doesn´t match SNI".into());
-                        }
-
-                        if let Some(host) = req
-                            .uri()
-                            .host()
-                            .and_then(|host| HeaderValue::from_str(host).ok())
-                        {
-                            req.headers_mut().insert("x-forwarded-host", host);
-                        }
-
-                        req.headers_mut().insert("x-forwarded-proto", https_proto);
-
-                        let mut parts = req.uri().clone().into_parts();
-                        parts.scheme = Some(Scheme::HTTP);
-                        parts.authority = authority;
-                        *req.uri_mut() = Uri::from_parts(parts)?;
-
-                        Ok::<_, Box<dyn Error + Send + Sync>>(http.request(req).await?)
-                    }
-                }))
-            }
-        }))
-        .await
-        .unwrap();
-}
-
-async fn tcp_proxy<T>(addr: SocketAddr, mut connections: impl Stream<Item = io::Result<T>> + Unpin)
-where
-    T: 'static,
-    T: Send + Unpin,
-    T: io::AsyncRead + io::AsyncWrite,
-{
-    while let Some(conn) = connections.next().await {
-        tokio::spawn(async move {
-            let mut src = conn?;
-            let mut dst = TcpStream::connect(addr).await?;
-            io::copy_bidirectional(&mut src, &mut dst).await?;
-            io::Result::Ok(())
-        });
-    }
 }
