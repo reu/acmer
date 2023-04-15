@@ -29,7 +29,7 @@ impl CertStore for FileStore {
         let (key, cert) = try_join!(fs::read(key), fs::read(cert))?;
 
         let key = PrivateKey(key);
-        let cert = pemfile::read_all(&mut std::io::Cursor::new(cert))?
+        let cert = pemfile::read_all(&mut cert.as_ref())?
             .into_iter()
             .filter_map(|item| match item {
                 pemfile::Item::X509Certificate(der) => Some(der),

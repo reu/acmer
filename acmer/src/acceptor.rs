@@ -278,7 +278,7 @@ impl<S> AcmeAcceptor<S> {
                                 .map(PrivateKey)
                                 .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-                            let cert = pemfile::read_all(&mut std::io::Cursor::new(cert))?;
+                            let cert = pemfile::read_all(&mut cert.as_bytes())?;
                             let cert = cert
                                 .into_iter()
                                 .filter_map(|item| match item {

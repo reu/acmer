@@ -171,7 +171,7 @@ impl CertStore for DynamodbStore {
 
         match (get_key(&record), get_cert(&record)) {
             (Some(key), Some(cert)) => {
-                let cert = pemfile::read_all(&mut std::io::Cursor::new(cert))?
+                let cert = pemfile::read_all(&mut cert.as_bytes())?
                     .into_iter()
                     .filter_map(|item| match item {
                         pemfile::Item::X509Certificate(der) => Some(der),
