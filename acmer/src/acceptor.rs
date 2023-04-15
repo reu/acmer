@@ -75,18 +75,22 @@ impl<S> AcmeAcceptor<S> {
         #[allow(unreachable_code)]
         let task = tokio::spawn(async move {
             loop {
+                let tx = tx.clone();
+
+                let conn = match incoming.next().await {
+                    Some(Ok(stream)) => stream,
+                    Some(Err(err)) => {
+                        tx.send(Err(err)).ok();
+                        continue;
+                    }
+                    None => break,
+                };
+
                 let auths = auths.clone();
                 let certs = certs.clone();
                 let accounts = accounts.clone();
                 let acme_client = acme_client.clone();
                 let domain_check = domain_check.clone();
-
-                let tx = tx.clone();
-
-                let conn = match incoming.next().await {
-                    Some(Ok(stream)) => stream,
-                    _ => continue,
-                };
 
                 tokio::spawn(async move {
                     let acceptor = LazyConfigAcceptor::new(Acceptor::default(), conn);
