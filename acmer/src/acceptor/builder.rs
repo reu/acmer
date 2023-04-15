@@ -209,7 +209,6 @@ where
         self.build_from_stream(incoming).await
     }
 
-    // TODO: return a result instead of panic
     pub async fn build_from_tcp_listener(self, listener: TcpListener) -> BuilderResult<TcpStream> {
         self.build_from_tcp_stream(TcpListenerStream::new(listener))
             .await
