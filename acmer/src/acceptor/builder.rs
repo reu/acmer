@@ -1,5 +1,5 @@
-use papaleguas::AcmeClient;
 use rustls::PrivateKey;
+use rustls_pemfile as pemfile;
 use thiserror::Error;
 use tokio::{
     io::{self, AsyncRead, AsyncWrite},
@@ -10,9 +10,12 @@ use tokio_stream::{
     Stream,
 };
 
-use crate::store::{
-    AccountStore, AuthChallengeStore, BoxedAccountStoreExt, CertStore, MemoryAccountStore,
-    MemoryAuthChallengeStore, MemoryCertStore, SingleAccountStore,
+use crate::{
+    store::{
+        AccountStore, AuthChallengeStore, BoxedAccountStoreExt, CertStore, MemoryAccountStore,
+        MemoryAuthChallengeStore, MemoryCertStore, SingleAccountStore,
+    },
+    AcmeClient,
 };
 
 use super::{AcmeAcceptor, DomainCheck};
@@ -20,12 +23,18 @@ use super::{AcmeAcceptor, DomainCheck};
 #[derive(Debug)]
 pub struct AcmeAcceptorBuilder<Auth, Cert, Acc, Domain> {
     acme: Option<AcmeClient>,
-    account_pk: Option<PrivateKey>,
+    account_pk: Option<AccountKey>,
     contacts: Option<Vec<String>>,
     challenge_store: Auth,
     cert_store: Cert,
     account_store: Acc,
     domain_checker: Domain,
+}
+
+#[derive(Debug)]
+enum AccountKey {
+    Pem(String),
+    Der(Vec<u8>),
 }
 
 impl Default
@@ -52,6 +61,8 @@ pub enum AcmeAcceptorBuilderError {
     FailToCreateAccount,
     #[error("failed to fetch ACME directory")]
     FailToFetchAcmeDirectory,
+    #[error("invalid ACME account private key")]
+    InvalidAccountPrivateKey,
 }
 
 type BuilderResult<S> = Result<AcmeAcceptor<S>, AcmeAcceptorBuilderError>;
@@ -63,6 +74,19 @@ where
     Acc: AccountStore + 'static,
     Domain: DomainCheck + 'static,
 {
+    pub fn with_account_pem_key(self, account_pk: impl Into<String>) -> Self {
+        Self {
+            account_pk: Some(AccountKey::Pem(account_pk.into())),
+            ..self
+        }
+    }
+    pub fn with_account_der_key(self, account_pk: impl Into<Vec<u8>>) -> Self {
+        Self {
+            account_pk: Some(AccountKey::Der(account_pk.into())),
+            ..self
+        }
+    }
+
     pub fn with_contact(self, contact: impl Into<String>) -> Self {
         let mut contacts = self.contacts.unwrap_or_default();
         contacts.push(contact.into());
@@ -159,8 +183,19 @@ where
                 .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)?,
         };
 
-        let account_store = if let Some(account_pk) = self.account_pk {
-            SingleAccountStore::new(account_pk).boxed()
+        let account_store = if let Some(AccountKey::Der(pk)) = self.account_pk {
+            SingleAccountStore::new(PrivateKey(pk)).boxed()
+        } else if let Some(AccountKey::Pem(pk)) = self.account_pk {
+            pemfile::read_one(&mut pk.as_bytes())
+                .map_err(|_| AcmeAcceptorBuilderError::InvalidAccountPrivateKey)
+                .and_then(|key| match key {
+                    Some(pemfile::Item::ECKey(key)) => Ok(PrivateKey(key)),
+                    Some(pemfile::Item::PKCS8Key(key)) => Ok(PrivateKey(key)),
+                    Some(pemfile::Item::RSAKey(key)) => Ok(PrivateKey(key)),
+                    _ => Err(AcmeAcceptorBuilderError::InvalidAccountPrivateKey),
+                })
+                .map(SingleAccountStore::new)?
+                .boxed()
         } else if let Some(ref contacts) = self.contacts {
             let account_store = self.account_store;
             let acme_directory = acme.directory_url();
