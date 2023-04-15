@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use rustls::{Certificate, PrivateKey};
 use tokio::{
     io,
-    sync::{Mutex, OwnedRwLockWriteGuard, RwLock},
+    sync::{OwnedRwLockWriteGuard, RwLock},
     try_join,
 };
 use tracing::trace;
@@ -121,7 +121,7 @@ impl AccountStore for MemoryAccountStore {
 
 #[derive(Debug, Default)]
 pub struct MemoryAuthChallengeStore {
-    store: Mutex<HashMap<String, Arc<RwLock<String>>>>,
+    store: DashMap<String, Arc<RwLock<String>>>,
 }
 
 pub struct MemoryAuthChallengeStoreGuard(OwnedRwLockWriteGuard<String>);
@@ -131,16 +131,14 @@ impl AuthChallengeStore for MemoryAuthChallengeStore {
     type LockGuard = MemoryAuthChallengeStoreGuard;
 
     async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
-        match self.store.lock().await.get(domain).cloned() {
-            Some(entry) => Ok(Some(entry.clone().read().await.clone())),
+        match self.store.get(domain) {
+            Some(entry) => Ok(Some(entry.value().clone().read().await.clone())),
             None => Ok(None),
         }
     }
 
     async fn lock(&self, domain: &str) -> io::Result<Self::LockGuard> {
         self.store
-            .lock()
-            .await
             .entry(domain.to_owned())
             .or_default()
             .clone()
@@ -150,7 +148,7 @@ impl AuthChallengeStore for MemoryAuthChallengeStore {
     }
 
     async fn unlock(&self, domain: &str) -> io::Result<()> {
-        self.store.lock().await.remove(domain);
+        self.store.remove(domain);
         Ok(())
     }
 }
