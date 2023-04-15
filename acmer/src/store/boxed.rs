@@ -2,10 +2,7 @@ use async_trait::async_trait;
 use rustls::{Certificate, PrivateKey};
 use tokio::io;
 
-use super::{
-    AccountStore, AuthChallengeDomainLock, AuthChallengeStore, AuthChallengeStoreLockError,
-    CertStore,
-};
+use super::{AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore};
 
 pub struct BoxedCertStore(Box<dyn CertStore>);
 
@@ -85,16 +82,16 @@ where
 {
     type LockGuard = L;
 
-    async fn get_challenge(&self, domain: &str) -> Option<String> {
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
         self.inner.get_challenge(domain).await
     }
 
-    async fn lock(&self, domain: &str) -> Result<Self::LockGuard, AuthChallengeStoreLockError> {
+    async fn lock(&self, domain: &str) -> io::Result<Self::LockGuard> {
         let lock = self.inner.lock(domain).await?;
         Ok((self.f)(lock))
     }
 
-    async fn unlock(&self, domain: &str) {
+    async fn unlock(&self, domain: &str) -> io::Result<()> {
         self.inner.unlock(domain).await
     }
 }
@@ -121,15 +118,15 @@ impl BoxedAuthChallengeStore {
 impl AuthChallengeStore for BoxedAuthChallengeStore {
     type LockGuard = BoxedAuthChallengeStoreGuard;
 
-    async fn get_challenge(&self, domain: &str) -> Option<String> {
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
         self.0.get_challenge(domain).await
     }
 
-    async fn lock(&self, domain: &str) -> Result<Self::LockGuard, AuthChallengeStoreLockError> {
+    async fn lock(&self, domain: &str) -> io::Result<Self::LockGuard> {
         self.0.lock(domain).await
     }
 
-    async fn unlock(&self, domain: &str) {
+    async fn unlock(&self, domain: &str) -> io::Result<()> {
         self.0.unlock(domain).await
     }
 }
@@ -148,7 +145,7 @@ pub struct BoxedAuthChallengeStoreGuard(Box<dyn AuthChallengeDomainLock + Send>)
 
 #[async_trait]
 impl AuthChallengeDomainLock for BoxedAuthChallengeStoreGuard {
-    async fn put_challenge(&mut self, challenge: String) {
+    async fn put_challenge(&mut self, challenge: String) -> io::Result<()> {
         self.0.put_challenge(challenge).await
     }
 }

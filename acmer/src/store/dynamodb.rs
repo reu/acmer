@@ -21,10 +21,7 @@ use rustls::{Certificate, PrivateKey};
 use rustls_pemfile as pemfile;
 use tokio::{io, time::sleep};
 
-use super::{
-    AccountStore, AuthChallengeDomainLock, AuthChallengeStore, AuthChallengeStoreLockError,
-    CertStore,
-};
+use super::{AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore};
 
 #[derive(Debug)]
 struct DynamodbStore {
@@ -248,22 +245,20 @@ impl AccountStore for DynamodbStore {
 impl AuthChallengeStore for DynamodbStore {
     type LockGuard = DynamodbAuthChallengeLock;
 
-    async fn get_challenge(&self, domain: &str) -> Option<String> {
-        self.client
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
+        Ok(self
+            .client
             .get_item()
             .table_name(&self.table_name)
             .key("hostname", AttributeValue::S(domain.to_string()))
             .send()
             .await
-            .ok()?
-            .item()?
-            .get("challenge")?
-            .as_s()
-            .ok()
-            .cloned()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+            .item()
+            .and_then(|item| item.get("challenge")?.as_s().ok().cloned()))
     }
 
-    async fn lock(&self, domain: &str) -> Result<Self::LockGuard, AuthChallengeStoreLockError> {
+    async fn lock(&self, domain: &str) -> io::Result<Self::LockGuard> {
         let lock_id = rand::thread_rng().gen::<[u8; 32]>();
         // TODO: make this configurable
         let ttl = Duration::from_secs(120);
@@ -278,7 +273,7 @@ impl AuthChallengeStore for DynamodbStore {
                 AttributeValue::N(
                     (SystemTime::now() + ttl)
                         .duration_since(SystemTime::UNIX_EPOCH)
-                        .map_err(|_| AuthChallengeStoreLockError)?
+                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
                         .as_secs()
                         .to_string(),
                 ),
@@ -293,14 +288,14 @@ impl AuthChallengeStore for DynamodbStore {
                 AttributeValue::N(
                     SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
-                        .map_err(|_| AuthChallengeStoreLockError)?
+                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
                         .as_secs()
                         .to_string(),
                 ),
             )
             .send()
             .await
-            .map_err(|_| AuthChallengeStoreLockError)?;
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
         Ok(DynamodbAuthChallengeLock {
             client: self.client.clone(),
@@ -311,14 +306,15 @@ impl AuthChallengeStore for DynamodbStore {
         })
     }
 
-    async fn unlock(&self, domain: &str) {
+    async fn unlock(&self, domain: &str) -> io::Result<()> {
         self.client
             .delete_item()
             .table_name(&self.table_name)
             .key("hostname", AttributeValue::S(domain.to_string()))
             .send()
             .await
-            .unwrap();
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        Ok(())
     }
 }
 
@@ -333,7 +329,7 @@ pub struct DynamodbAuthChallengeLock {
 
 #[async_trait]
 impl AuthChallengeDomainLock for DynamodbAuthChallengeLock {
-    async fn put_challenge(&mut self, challenge: String) {
+    async fn put_challenge(&mut self, challenge: String) -> io::Result<()> {
         self.client
             .put_item()
             .table_name(&self.table_name)
@@ -354,7 +350,8 @@ impl AuthChallengeDomainLock for DynamodbAuthChallengeLock {
             .expression_attribute_values(":lock", AttributeValue::B(Blob::new(self.lock_id)))
             .send()
             .await
-            .unwrap();
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        Ok(())
     }
 }
 
@@ -440,15 +437,15 @@ impl AuthChallengeDynamodbStore {
 impl AuthChallengeStore for AuthChallengeDynamodbStore {
     type LockGuard = DynamodbAuthChallengeLock;
 
-    async fn get_challenge(&self, domain: &str) -> Option<String> {
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
         self.0.get_challenge(domain).await
     }
 
-    async fn lock(&self, domain: &str) -> Result<Self::LockGuard, AuthChallengeStoreLockError> {
+    async fn lock(&self, domain: &str) -> io::Result<Self::LockGuard> {
         self.0.lock(domain).await
     }
 
-    async fn unlock(&self, domain: &str) {
+    async fn unlock(&self, domain: &str) -> io::Result<()> {
         self.0.unlock(domain).await
     }
 }
@@ -496,13 +493,14 @@ mod test {
         let mut lock2 = store.lock("wtf.wut").await.unwrap();
         assert!(&store.lock("wtf.wut").await.is_err());
 
-        lock1.put_challenge("1".to_string()).await;
-        lock2.put_challenge("2".to_string()).await;
+        lock1.put_challenge("1".to_string()).await.unwrap();
+        lock2.put_challenge("2".to_string()).await.unwrap();
 
         drop(lock1);
         assert_eq!(
             AuthChallengeStore::get_challenge(&store, "lol.wut")
                 .await
+                .unwrap()
                 .unwrap(),
             "1"
         );
@@ -511,12 +509,14 @@ mod test {
         assert_eq!(
             AuthChallengeStore::get_challenge(&store, "wtf.wut")
                 .await
+                .unwrap()
                 .unwrap(),
             "2"
         );
 
         assert!(AuthChallengeStore::get_challenge(&store, "other.wut")
             .await
+            .unwrap()
             .is_none());
     }
 }

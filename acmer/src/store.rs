@@ -41,17 +41,14 @@ pub trait AccountStore: Send + Sync {
 #[async_trait]
 pub trait AuthChallengeStore: Send + Sync {
     type LockGuard: AuthChallengeDomainLock + Send;
-    async fn get_challenge(&self, domain: &str) -> Option<String>;
-    async fn lock(&self, domain: &str) -> Result<Self::LockGuard, AuthChallengeStoreLockError>;
-    async fn unlock(&self, domain: &str);
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>>;
+    async fn lock(&self, domain: &str) -> io::Result<Self::LockGuard>;
+    async fn unlock(&self, domain: &str) -> io::Result<()>;
 }
-
-#[derive(Debug)]
-pub struct AuthChallengeStoreLockError;
 
 #[async_trait]
 pub trait AuthChallengeDomainLock: Send + Sync {
-    async fn put_challenge(&mut self, challenge: String);
+    async fn put_challenge(&mut self, challenge: String) -> io::Result<()>;
 }
 
 #[async_trait]
@@ -133,12 +130,14 @@ pub struct MemoryAuthChallengeStoreGuard(OwnedRwLockWriteGuard<String>);
 impl AuthChallengeStore for MemoryAuthChallengeStore {
     type LockGuard = MemoryAuthChallengeStoreGuard;
 
-    async fn get_challenge(&self, domain: &str) -> Option<String> {
-        let entry = self.store.lock().await.get(domain).cloned()?;
-        Some(entry.clone().read().await.clone())
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
+        match self.store.lock().await.get(domain).cloned() {
+            Some(entry) => Ok(Some(entry.clone().read().await.clone())),
+            None => Ok(None),
+        }
     }
 
-    async fn lock(&self, domain: &str) -> Result<Self::LockGuard, AuthChallengeStoreLockError> {
+    async fn lock(&self, domain: &str) -> io::Result<Self::LockGuard> {
         self.store
             .lock()
             .await
@@ -147,18 +146,20 @@ impl AuthChallengeStore for MemoryAuthChallengeStore {
             .clone()
             .try_write_owned()
             .map(MemoryAuthChallengeStoreGuard)
-            .map_err(|_| AuthChallengeStoreLockError)
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "could not arquire lock"))
     }
 
-    async fn unlock(&self, domain: &str) {
+    async fn unlock(&self, domain: &str) -> io::Result<()> {
         self.store.lock().await.remove(domain);
+        Ok(())
     }
 }
 
 #[async_trait]
 impl AuthChallengeDomainLock for MemoryAuthChallengeStoreGuard {
-    async fn put_challenge(&mut self, challenge: String) {
-        *self.0 = challenge
+    async fn put_challenge(&mut self, challenge: String) -> io::Result<()> {
+        *self.0 = challenge;
+        Ok(())
     }
 }
 
@@ -350,16 +351,16 @@ mod test {
         let mut lock2 = store.lock("wtf.wut").await.unwrap();
         assert!(store.lock("wtf.wut").await.is_err());
 
-        lock1.put_challenge("1".to_string()).await;
-        lock2.put_challenge("2".to_string()).await;
+        lock1.put_challenge("1".to_string()).await.unwrap();
+        lock2.put_challenge("2".to_string()).await.unwrap();
 
         drop(lock1);
-        assert_eq!(store.get_challenge("lol.wut").await.unwrap(), "1");
+        assert_eq!(store.get_challenge("lol.wut").await.unwrap().unwrap(), "1");
 
         drop(lock2);
-        assert_eq!(store.get_challenge("wtf.wut").await.unwrap(), "2");
+        assert_eq!(store.get_challenge("wtf.wut").await.unwrap().unwrap(), "2");
 
-        assert!(store.get_challenge("other.wut").await.is_none());
+        assert!(store.get_challenge("other.wut").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -367,7 +368,7 @@ mod test {
         let store = MemoryAuthChallengeStore::default();
 
         let _lock = store.lock("lol.wut").await.unwrap();
-        store.unlock("lol.wut").await;
+        store.unlock("lol.wut").await.unwrap();
         let _lock = store.lock("lol.wut").await.unwrap();
     }
 }

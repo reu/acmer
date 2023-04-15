@@ -111,7 +111,7 @@ impl<S> AcmeAcceptor<S> {
                         let mut cert = certs.get_cert(&domain).await?;
 
                         if has_acme_tls {
-                            if let Some(auth) = auths.get_challenge(&domain).await {
+                            if let Some(auth) = auths.get_challenge(&domain).await? {
                                 debug!(domain, "answering validation request");
 
                                 let auth = Sha256::new().chain_update(auth).finalize();
@@ -165,7 +165,7 @@ impl<S> AcmeAcceptor<S> {
 
                             tx.send(Ok(conn)).ok();
                             break;
-                        } else if auths.get_challenge(&domain).await.is_none() {
+                        } else if auths.get_challenge(&domain).await?.is_none() {
                             trace!(domain = ?domain, "starting validation challenge");
 
                             let mut auth = match auths.lock(&domain).await {
@@ -229,7 +229,7 @@ impl<S> AcmeAcceptor<S> {
                                 .key_authorization()
                                 .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-                            auth.put_challenge(key_auth).await;
+                            auth.put_challenge(key_auth).await?;
 
                             drop(auth);
 
