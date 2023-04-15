@@ -34,7 +34,6 @@ dependencies = [
  "acmer",
  "hyper",
  "tokio",
- "tokio-rustls",
  "tokio-stream",
 ]
 
