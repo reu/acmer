@@ -1083,9 +1083,9 @@ dependencies = [
 
 [[package]]
 name = "papaleguas"
-version = "0.0.4"
+version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "356f5b7ae4a345ed77608dbd5bfcb3b937e1a18f35a6745e33387bb4fe21a4b2"
+checksum = "87631b6aa8a7204e35919cf0e42b12a094724abdca4dd71e3487f2152c044c81"
 dependencies = [
  "base64ct",
  "bytes",
