@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use rustls::{server::WantsServerCert, ConfigBuilder, PrivateKey, ServerConfig};
 use rustls_pemfile as pemfile;
 use thiserror::Error;
@@ -20,9 +22,8 @@ use crate::{
 
 use super::{config::ConfigResolver, AcmeAcceptor, DomainCheck};
 
-#[derive(Debug)]
 pub struct AcmeAcceptorBuilder<Auth, Cert, Acc, Domain, Config> {
-    acme: Option<AcmeClient>,
+    acme: Box<dyn Future<Output = Result<AcmeClient, AcmeAcceptorBuilderError>> + Unpin>,
     account_pk: Option<AccountKey>,
     contacts: Option<Vec<String>>,
     challenge_store: Auth,
@@ -49,7 +50,12 @@ impl Default
 {
     fn default() -> Self {
         Self {
-            acme: None,
+            acme: Box::new(Box::pin(async {
+                AcmeClient::builder()
+                    .build_lets_encrypt_staging()
+                    .await
+                    .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)
+            })),
             account_pk: None,
             contacts: None,
             challenge_store: MemoryAuthChallengeStore::default(),
@@ -202,9 +208,33 @@ where
         }
     }
 
-    pub fn acme_client(self, acme: crate::AcmeClient) -> Self {
+    pub fn with_lets_encrypt_production(self) -> Self {
         Self {
-            acme: Some(acme),
+            acme: Box::new(Box::pin(async {
+                AcmeClient::builder()
+                    .build_lets_encrypt_production()
+                    .await
+                    .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)
+            })),
+            ..self
+        }
+    }
+
+    pub fn with_lets_encrypt_staging(self) -> Self {
+        Self {
+            acme: Box::new(Box::pin(async {
+                AcmeClient::builder()
+                    .build_lets_encrypt_staging()
+                    .await
+                    .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)
+            })),
+            ..self
+        }
+    }
+
+    pub fn acme_client(self, acme: AcmeClient) -> Self {
+        Self {
+            acme: Box::new(Box::pin(async { Ok(acme) })),
             ..self
         }
     }
@@ -215,13 +245,7 @@ where
         S: Send + Unpin + 'static,
         I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let acme = match self.acme {
-            Some(acme) => acme,
-            None => AcmeClient::builder()
-                .build_lets_encrypt_staging()
-                .await
-                .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)?,
-        };
+        let acme = self.acme.await?;
 
         let account_store = if let Some(AccountKey::Der(pk)) = self.account_pk {
             SingleAccountStore::new(PrivateKey(pk)).boxed()
