@@ -1,5 +1,4 @@
-use std::future::Future;
-
+use papaleguas::AcmeClient;
 use rustls::{server::WantsServerCert, ConfigBuilder, PrivateKey, ServerConfig};
 use rustls_pemfile as pemfile;
 use thiserror::Error;
@@ -12,18 +11,15 @@ use tokio_stream::{
     Stream,
 };
 
-use crate::{
-    store::{
-        AccountStore, AuthChallengeStore, BoxedAccountStoreExt, CertStore, MemoryAccountStore,
-        MemoryAuthChallengeStore, MemoryCertStore, SingleAccountStore,
-    },
-    AcmeClient,
+use crate::store::{
+    AccountStore, AuthChallengeStore, BoxedAccountStoreExt, CertStore, MemoryAccountStore,
+    MemoryAuthChallengeStore, MemoryCertStore, SingleAccountStore,
 };
 
 use super::{config::ConfigResolver, AcmeAcceptor, DomainCheck};
 
 pub struct AcmeAcceptorBuilder<Auth, Cert, Acc, Domain, Config> {
-    acme: Box<dyn Future<Output = Result<AcmeClient, AcmeAcceptorBuilderError>> + Unpin>,
+    acme_directory: String,
     account_pk: Option<AccountKey>,
     contacts: Option<Vec<String>>,
     challenge_store: Auth,
@@ -50,12 +46,7 @@ impl Default
 {
     fn default() -> Self {
         Self {
-            acme: Box::new(Box::pin(async {
-                AcmeClient::builder()
-                    .build_lets_encrypt_staging()
-                    .await
-                    .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)
-            })),
+            acme_directory: String::from("https://acme-staging-v02.api.letsencrypt.org/directory"),
             account_pk: None,
             contacts: None,
             challenge_store: MemoryAuthChallengeStore::default(),
@@ -121,7 +112,7 @@ where
         D: DomainCheck + 'static,
     {
         AcmeAcceptorBuilder {
-            acme: self.acme,
+            acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
             challenge_store: self.challenge_store,
@@ -140,7 +131,7 @@ where
         C: ConfigResolver + 'static,
     {
         AcmeAcceptorBuilder {
-            acme: self.acme,
+            acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
             challenge_store: self.challenge_store,
@@ -159,7 +150,7 @@ where
         A: AuthChallengeStore + 'static,
     {
         AcmeAcceptorBuilder {
-            acme: self.acme,
+            acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
             challenge_store,
@@ -178,7 +169,7 @@ where
         C: CertStore + 'static,
     {
         AcmeAcceptorBuilder {
-            acme: self.acme,
+            acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
             challenge_store: self.challenge_store,
@@ -197,7 +188,7 @@ where
         A: AccountStore + 'static,
     {
         AcmeAcceptorBuilder {
-            acme: self.acme,
+            acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
             challenge_store: self.challenge_store,
@@ -210,31 +201,21 @@ where
 
     pub fn with_lets_encrypt_production(self) -> Self {
         Self {
-            acme: Box::new(Box::pin(async {
-                AcmeClient::builder()
-                    .build_lets_encrypt_production()
-                    .await
-                    .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)
-            })),
+            acme_directory: String::from("https://acme-v02.api.letsencrypt.org/directory"),
             ..self
         }
     }
 
     pub fn with_lets_encrypt_staging(self) -> Self {
         Self {
-            acme: Box::new(Box::pin(async {
-                AcmeClient::builder()
-                    .build_lets_encrypt_staging()
-                    .await
-                    .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)
-            })),
+            acme_directory: String::from("https://acme-staging-v02.api.letsencrypt.org/directory"),
             ..self
         }
     }
 
-    pub fn acme_client(self, acme: AcmeClient) -> Self {
+    pub fn with_directory_url(self, url: impl Into<String>) -> Self {
         Self {
-            acme: Box::new(Box::pin(async { Ok(acme) })),
+            acme_directory: url.into(),
             ..self
         }
     }
@@ -245,7 +226,9 @@ where
         S: Send + Unpin + 'static,
         I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let acme = self.acme.await?;
+        let acme = AcmeClient::from_directory_url(self.acme_directory)
+            .await
+            .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)?;
 
         let account_store = if let Some(AccountKey::Der(pk)) = self.account_pk {
             SingleAccountStore::new(PrivateKey(pk)).boxed()

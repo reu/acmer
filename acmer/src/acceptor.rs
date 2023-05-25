@@ -29,7 +29,7 @@ use crate::store::{
     MemoryAuthChallengeStore, MemoryCertStore,
 };
 
-use self::{builder::AcmeAcceptorBuilder, config::ConfigResolver};
+pub use {builder::*, config::ConfigResolver};
 
 mod builder;
 mod config;
