@@ -311,6 +311,10 @@ impl<S> AcmeAcceptor<S> {
             task,
         }
     }
+
+    pub async fn accept(&mut self) -> Option<io::Result<Connection<S>>> {
+        self.next().await
+    }
 }
 
 impl<S> Stream for AcmeAcceptor<S> {
