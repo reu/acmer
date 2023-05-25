@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    pin::Pin,
+    pin::{pin, Pin},
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -321,7 +321,7 @@ impl<S> Stream for AcmeAcceptor<S> {
     type Item = io::Result<Connection<S>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.connections).poll_next(cx)
+        pin!(&mut self.connections).poll_next(cx)
     }
 }
 
@@ -348,7 +348,7 @@ where
         cx: &mut Context<'_>,
         buf: &mut io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_read(cx, buf)
+        pin!(&mut self.stream).poll_read(cx, buf)
     }
 }
 
@@ -361,15 +361,15 @@ where
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.stream).poll_write(cx, buf)
+        pin!(&mut self.stream).poll_write(cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_flush(cx)
+        pin!(&mut self.stream).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_shutdown(cx)
+        pin!(&mut self.stream).poll_shutdown(cx)
     }
 }
 
