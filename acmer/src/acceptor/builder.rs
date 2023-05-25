@@ -1,4 +1,4 @@
-use rustls::PrivateKey;
+use rustls::{server::WantsServerCert, ConfigBuilder, PrivateKey, ServerConfig};
 use rustls_pemfile as pemfile;
 use thiserror::Error;
 use tokio::{
@@ -18,10 +18,10 @@ use crate::{
     AcmeClient,
 };
 
-use super::{AcmeAcceptor, DomainCheck};
+use super::{config::ConfigResolver, AcmeAcceptor, DomainCheck};
 
 #[derive(Debug)]
-pub struct AcmeAcceptorBuilder<Auth, Cert, Acc, Domain> {
+pub struct AcmeAcceptorBuilder<Auth, Cert, Acc, Domain, Config> {
     acme: Option<AcmeClient>,
     account_pk: Option<AccountKey>,
     contacts: Option<Vec<String>>,
@@ -29,6 +29,7 @@ pub struct AcmeAcceptorBuilder<Auth, Cert, Acc, Domain> {
     cert_store: Cert,
     account_store: Acc,
     domain_checker: Domain,
+    config_resolver: Config,
 }
 
 #[derive(Debug)]
@@ -38,7 +39,13 @@ enum AccountKey {
 }
 
 impl Default
-    for AcmeAcceptorBuilder<MemoryAuthChallengeStore, MemoryCertStore, MemoryAccountStore, bool>
+    for AcmeAcceptorBuilder<
+        MemoryAuthChallengeStore,
+        MemoryCertStore,
+        MemoryAccountStore,
+        bool,
+        ConfigBuilder<ServerConfig, WantsServerCert>,
+    >
 {
     fn default() -> Self {
         Self {
@@ -49,6 +56,9 @@ impl Default
             cert_store: MemoryCertStore::default(),
             account_store: MemoryAccountStore::default(),
             domain_checker: true,
+            config_resolver: ServerConfig::builder()
+                .with_safe_defaults()
+                .with_no_client_auth(),
         }
     }
 }
@@ -67,12 +77,13 @@ pub enum AcmeAcceptorBuilderError {
 
 type BuilderResult<S> = Result<AcmeAcceptor<S>, AcmeAcceptorBuilderError>;
 
-impl<Auth, Cert, Acc, Domain> AcmeAcceptorBuilder<Auth, Cert, Acc, Domain>
+impl<Auth, Cert, Acc, Domain, Config> AcmeAcceptorBuilder<Auth, Cert, Acc, Domain, Config>
 where
     Cert: CertStore + 'static,
     Auth: AuthChallengeStore + 'static,
     Acc: AccountStore + 'static,
     Domain: DomainCheck + 'static,
+    Config: ConfigResolver + 'static,
 {
     pub fn with_account_pem_key(self, account_pk: impl Into<String>) -> Self {
         Self {
@@ -96,7 +107,10 @@ where
         }
     }
 
-    pub fn allowed_domains<D>(self, domain_checker: D) -> AcmeAcceptorBuilder<Auth, Cert, Acc, D>
+    pub fn allowed_domains<D>(
+        self,
+        domain_checker: D,
+    ) -> AcmeAcceptorBuilder<Auth, Cert, Acc, D, Config>
     where
         D: DomainCheck + 'static,
     {
@@ -108,15 +122,35 @@ where
             cert_store: self.cert_store,
             account_store: self.account_store,
             domain_checker,
+            config_resolver: self.config_resolver,
+        }
+    }
+
+    pub fn with_rustls_config<C>(
+        self,
+        config_resolver: C,
+    ) -> AcmeAcceptorBuilder<Auth, Cert, Acc, Domain, C>
+    where
+        C: ConfigResolver + 'static,
+    {
+        AcmeAcceptorBuilder {
+            acme: self.acme,
+            account_pk: self.account_pk,
+            contacts: self.contacts,
+            challenge_store: self.challenge_store,
+            cert_store: self.cert_store,
+            account_store: self.account_store,
+            domain_checker: self.domain_checker,
+            config_resolver,
         }
     }
 
     pub fn with_auth_challenge_store<A>(
         self,
         challenge_store: A,
-    ) -> AcmeAcceptorBuilder<A, Cert, Acc, Domain>
+    ) -> AcmeAcceptorBuilder<A, Cert, Acc, Domain, Config>
     where
-        Auth: AuthChallengeStore + 'static,
+        A: AuthChallengeStore + 'static,
     {
         AcmeAcceptorBuilder {
             acme: self.acme,
@@ -126,10 +160,14 @@ where
             cert_store: self.cert_store,
             account_store: self.account_store,
             domain_checker: self.domain_checker,
+            config_resolver: self.config_resolver,
         }
     }
 
-    pub fn with_cert_store<C>(self, cert_store: C) -> AcmeAcceptorBuilder<Auth, C, Acc, Domain>
+    pub fn with_cert_store<C>(
+        self,
+        cert_store: C,
+    ) -> AcmeAcceptorBuilder<Auth, C, Acc, Domain, Config>
     where
         C: CertStore + 'static,
     {
@@ -141,13 +179,14 @@ where
             cert_store,
             account_store: self.account_store,
             domain_checker: self.domain_checker,
+            config_resolver: self.config_resolver,
         }
     }
 
     pub fn with_account_store<A>(
         self,
         account_store: A,
-    ) -> AcmeAcceptorBuilder<Auth, Cert, A, Domain>
+    ) -> AcmeAcceptorBuilder<Auth, Cert, A, Domain, Config>
     where
         A: AccountStore + 'static,
     {
@@ -159,6 +198,7 @@ where
             cert_store: self.cert_store,
             account_store,
             domain_checker: self.domain_checker,
+            config_resolver: self.config_resolver,
         }
     }
 
@@ -226,13 +266,14 @@ where
             return Err(AcmeAcceptorBuilderError::NoAccountProvided);
         };
 
-        Ok(AcmeAcceptor::new(
+        Ok(AcmeAcceptor::start(
             acme,
             incoming,
             self.cert_store,
             self.challenge_store,
             account_store,
             self.domain_checker,
+            self.config_resolver,
         ))
     }
 

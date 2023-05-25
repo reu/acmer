@@ -8,7 +8,10 @@ use std::{
 
 use dashmap::DashSet;
 use papaleguas::{AcmeClient, OrderStatus};
-use rustls::{server::Acceptor, Certificate, PrivateKey, ServerConfig};
+use rustls::{
+    server::{Acceptor, WantsServerCert},
+    Certificate, ConfigBuilder, PrivateKey, ServerConfig,
+};
 use rustls_pemfile as pemfile;
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -26,9 +29,10 @@ use crate::store::{
     MemoryAuthChallengeStore, MemoryCertStore,
 };
 
-use self::builder::AcmeAcceptorBuilder;
+use self::{builder::AcmeAcceptorBuilder, config::ConfigResolver};
 
 mod builder;
+mod config;
 
 const ACME_ALPN: &[u8] = b"acme-tls/1";
 
@@ -44,21 +48,26 @@ impl<S> Drop for AcmeAcceptor<S> {
 }
 
 impl AcmeAcceptor<TcpStream> {
-    pub fn builder(
-    ) -> AcmeAcceptorBuilder<MemoryAuthChallengeStore, MemoryCertStore, MemoryAccountStore, bool>
-    {
+    pub fn builder() -> AcmeAcceptorBuilder<
+        MemoryAuthChallengeStore,
+        MemoryCertStore,
+        MemoryAccountStore,
+        bool,
+        ConfigBuilder<ServerConfig, WantsServerCert>,
+    > {
         AcmeAcceptorBuilder::default()
     }
 }
 
 impl<S> AcmeAcceptor<S> {
-    pub fn new<L>(
+    fn start<L>(
         acme_client: AcmeClient,
         mut incoming: L,
         certs: impl CertStore + 'static,
         auths: impl AuthChallengeStore + 'static,
         accounts: impl AccountStore + 'static,
         domain_check: impl DomainCheck + 'static,
+        ruslts_config: impl ConfigResolver + 'static,
     ) -> Self
     where
         L: Stream<Item = io::Result<S>>,
@@ -71,6 +80,7 @@ impl<S> AcmeAcceptor<S> {
         let auths = Arc::new(auths);
         let accounts = Arc::new(accounts);
         let domain_check = Arc::new(domain_check);
+        let ruslts_config = Arc::new(ruslts_config);
 
         #[allow(unreachable_code)]
         let task = tokio::spawn(async move {
@@ -91,6 +101,7 @@ impl<S> AcmeAcceptor<S> {
                 let accounts = accounts.clone();
                 let acme_client = acme_client.clone();
                 let domain_check = domain_check.clone();
+                let ruslts_config = ruslts_config.clone();
 
                 tokio::spawn(async move {
                     let acceptor = LazyConfigAcceptor::new(Acceptor::default(), conn);
@@ -153,15 +164,11 @@ impl<S> AcmeAcceptor<S> {
                                 debug!(domain, "validation request of unknown domain");
                             }
                         } else if let Some((key, cert)) = cert.take() {
-                            let conn = handshake
-                                .into_stream(Arc::new(
-                                    ServerConfig::builder()
-                                        .with_safe_defaults()
-                                        .with_no_client_auth()
-                                        .with_single_cert(cert, key)
-                                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
-                                ))
-                                .await?;
+                            let config = ruslts_config
+                                .rustls_config(&domain, key, cert)
+                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+                            let conn = handshake.into_stream(Arc::new(config)).await?;
 
                             let conn = Connection { stream: conn };
 
