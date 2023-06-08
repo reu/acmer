@@ -22,6 +22,7 @@ papaleguas = "0.0.5"
 pem-rfc7468 = "0.6.0"
 rand = "0.8.5"
 rcgen = "0.10.0"
+reqwest = { version = "0.11.18", default-features = false, features = ["json", "rustls-tls"] }
 rustls = "0.20.7"
 rustls-pemfile = "1.0.1"
 sha2 = { version = "0.10.6", features = ["oid"] }
@@ -34,4 +35,6 @@ x509-cert = { version = "0.1.1", features = ["std"] }
 
 [dev-dependencies]
 aws-types = { version = "0.52.0", features = ["hardcoded-credentials"] }
+webpki = { package = "rustls-webpki", version = "0.100.1", features = ["alloc", "std"] }
 tempfile = "3.3.0"
+tracing-test = "0.2.4"

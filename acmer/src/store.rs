@@ -104,18 +104,29 @@ impl CertStore for MemoryCertStore {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct MemoryAccountStore(RwLock<HashMap<String, PrivateKey>>);
+#[async_trait]
+impl AccountStore for DashMap<String, PrivateKey> {
+    async fn get_account(&self, directory: &str) -> io::Result<Option<PrivateKey>> {
+        Ok(self.get(directory).map(|item| item.value().clone()))
+    }
+
+    async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
+        self.insert(directory.to_owned(), key);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MemoryAccountStore(Arc<DashMap<String, PrivateKey>>);
 
 #[async_trait]
 impl AccountStore for MemoryAccountStore {
     async fn get_account(&self, directory: &str) -> io::Result<Option<PrivateKey>> {
-        Ok(self.0.read().await.get(directory).cloned())
+        self.0.get_account(directory).await
     }
 
     async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
-        self.0.write().await.insert(directory.to_owned(), key);
-        Ok(())
+        self.0.put_account(directory, key).await
     }
 }
 

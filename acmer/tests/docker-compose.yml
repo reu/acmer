@@ -6,3 +6,34 @@ services:
     container_name: dynamodb-local
     ports:
       - 8000:8000
+
+  pebble:
+    image: letsencrypt/pebble:latest
+    command: pebble -config /pebble-config.json -strict -dnsserver 10.20.50.3:8053
+    environment:
+      PEBBLE_VA_ALWAYS_VALID: 1
+    ports:
+      - 14000:14000
+      - 15000:15000
+    networks:
+      acmer_pebble_network:
+        ipv4_address: 10.20.50.2
+    volumes:
+      - ./pebble-config.json/:/pebble-config.json
+
+  challtestsrv:
+    image: letsencrypt/pebble-challtestsrv:latest
+    command: pebble-challtestsrv -defaultIPv6 "" -defaultIPv4 172.17.0.1
+    ports:
+      - 8055:8055
+    networks:
+      acmer_pebble_network:
+        ipv4_address: 10.20.50.3
+
+networks:
+  acmer_pebble_network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.20.50.0/24

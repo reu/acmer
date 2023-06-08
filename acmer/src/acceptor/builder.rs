@@ -16,9 +16,10 @@ use crate::store::{
     MemoryAuthChallengeStore, MemoryCertStore, SingleAccountStore,
 };
 
-use super::{config::ConfigResolver, AcmeAcceptor, DomainCheck};
+use super::{config::ConfigResolver, domain_check::DomainCheck, AcmeAcceptor};
 
 pub struct AcmeAcceptorBuilder<Auth, Cert, Acc, Domain, Config> {
+    http_client: reqwest::Client,
     acme_directory: String,
     account_pk: Option<AccountKey>,
     contacts: Option<Vec<String>>,
@@ -46,6 +47,7 @@ impl Default
 {
     fn default() -> Self {
         Self {
+            http_client: reqwest::Client::default(),
             acme_directory: String::from("https://acme-staging-v02.api.letsencrypt.org/directory"),
             account_pk: None,
             contacts: None,
@@ -82,12 +84,43 @@ where
     Domain: DomainCheck + 'static,
     Config: ConfigResolver + 'static,
 {
+    /// The ACME account private key to be used. The key must be encoded on PKCS8 PEM format.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use acmer::{AcmeAcceptor, acceptor::AcmeAcceptorBuilderError};
+    /// # use tokio::{fs, net::{TcpListener, TcpStream}};
+    /// # async fn test() -> Result<AcmeAcceptor<TcpStream>, Box<dyn std::error::Error + Send + Sync>> {
+    /// # let acceptor =
+    /// AcmeAcceptor::builder()
+    ///     .with_account_pem_key(fs::read_to_string("acme.pem").await?)
+    ///     .build_from_tcp_listener(TcpListener::bind("0.0.0.0:443").await?)
+    ///     .await;
+    /// #    Ok(acceptor?)
+    /// # }
+    /// ```
     pub fn with_account_pem_key(self, account_pk: impl Into<String>) -> Self {
         Self {
             account_pk: Some(AccountKey::Pem(account_pk.into())),
             ..self
         }
     }
+
+    /// The ACME account private key to be used. The key must be encoded on PKCS8 DER format.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use acmer::{AcmeAcceptor, acceptor::AcmeAcceptorBuilderError};
+    /// # use tokio::{fs, net::{TcpListener, TcpStream}};
+    /// # async fn test() -> Result<AcmeAcceptor<TcpStream>, Box<dyn std::error::Error + Send + Sync>> {
+    /// # let acceptor =
+    /// AcmeAcceptor::builder()
+    ///     .with_account_der_key(fs::read("acme.der").await?)
+    ///     .build_from_tcp_listener(TcpListener::bind("0.0.0.0:443").await?)
+    ///     .await;
+    /// #    Ok(acceptor?)
+    /// # }
+    /// ```
     pub fn with_account_der_key(self, account_pk: impl Into<Vec<u8>>) -> Self {
         Self {
             account_pk: Some(AccountKey::Der(account_pk.into())),
@@ -95,6 +128,21 @@ where
         }
     }
 
+    /// If the given private key is not yet registered, the
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use acmer::{AcmeAcceptor, acceptor::AcmeAcceptorBuilderError};
+    /// # use tokio::{fs, net::{TcpListener, TcpStream}};
+    /// # async fn test() -> Result<AcmeAcceptor<TcpStream>, Box<dyn std::error::Error + Send + Sync>> {
+    /// # let acceptor =
+    /// AcmeAcceptor::builder()
+    ///     .with_account_pem_key(fs::read_to_string("acme.der").await?)
+    ///     .build_from_tcp_listener(TcpListener::bind("0.0.0.0:443").await?)
+    ///     .await;
+    /// #    Ok(acceptor?)
+    /// # }
+    /// ```
     pub fn with_contact(self, contact: impl Into<String>) -> Self {
         let mut contacts = self.contacts.unwrap_or_default();
         contacts.push(contact.into());
@@ -112,6 +160,7 @@ where
         D: DomainCheck + 'static,
     {
         AcmeAcceptorBuilder {
+            http_client: self.http_client,
             acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
@@ -131,6 +180,7 @@ where
         C: ConfigResolver + 'static,
     {
         AcmeAcceptorBuilder {
+            http_client: self.http_client,
             acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
@@ -150,6 +200,7 @@ where
         A: AuthChallengeStore + 'static,
     {
         AcmeAcceptorBuilder {
+            http_client: self.http_client,
             acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
@@ -169,6 +220,7 @@ where
         C: CertStore + 'static,
     {
         AcmeAcceptorBuilder {
+            http_client: self.http_client,
             acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
@@ -188,6 +240,7 @@ where
         A: AccountStore + 'static,
     {
         AcmeAcceptorBuilder {
+            http_client: self.http_client,
             acme_directory: self.acme_directory,
             account_pk: self.account_pk,
             contacts: self.contacts,
@@ -220,48 +273,68 @@ where
         }
     }
 
+    pub fn with_http_client(self, http_client: reqwest::Client) -> Self {
+        Self {
+            http_client,
+            ..self
+        }
+    }
+
     pub async fn build_from_stream<S, I>(self, incoming: S) -> BuilderResult<I>
     where
         S: Stream<Item = io::Result<I>>,
         S: Send + Unpin + 'static,
         I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let acme = AcmeClient::from_directory_url(self.acme_directory)
+        let acme = AcmeClient::builder()
+            .http_client(self.http_client)
+            .build_with_directory_url(self.acme_directory)
             .await
             .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)?;
 
-        let account_store = if let Some(AccountKey::Der(pk)) = self.account_pk {
-            SingleAccountStore::new(PrivateKey(pk)).boxed()
+        let private_key = if let Some(AccountKey::Der(pk)) = self.account_pk {
+            Some(pk)
         } else if let Some(AccountKey::Pem(pk)) = self.account_pk {
-            pemfile::read_one(&mut pk.as_bytes())
-                .map_err(|_| AcmeAcceptorBuilderError::InvalidAccountPrivateKey)
-                .and_then(|key| match key {
-                    Some(pemfile::Item::ECKey(key)) => Ok(PrivateKey(key)),
-                    Some(pemfile::Item::PKCS8Key(key)) => Ok(PrivateKey(key)),
-                    Some(pemfile::Item::RSAKey(key)) => Ok(PrivateKey(key)),
-                    _ => Err(AcmeAcceptorBuilderError::InvalidAccountPrivateKey),
-                })
-                .map(SingleAccountStore::new)?
-                .boxed()
-        } else if let Some(ref contacts) = self.contacts {
+            Some(
+                pemfile::read_one(&mut pk.as_bytes())
+                    .map_err(|_| AcmeAcceptorBuilderError::InvalidAccountPrivateKey)
+                    .and_then(|key| match key {
+                        Some(pemfile::Item::PKCS8Key(key)) => Ok(key),
+                        _ => Err(AcmeAcceptorBuilderError::InvalidAccountPrivateKey),
+                    })?,
+            )
+        } else {
+            None
+        };
+
+        let contacts = self.contacts.unwrap_or_default();
+        let account = acme
+            .new_account()
+            .contacts(contacts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+            .terms_of_service_agreed(true);
+
+        let account_store = if let Some(key) = private_key {
+            account
+                .private_key(&key)
+                .send()
+                .await
+                .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?;
+            SingleAccountStore::new(PrivateKey(key)).boxed()
+        } else {
             let account_store = self.account_store;
             let acme_directory = acme.directory_url();
-
             if account_store
                 .get_account(acme_directory)
                 .await
-                .ok()
+                .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?
                 .is_none()
             {
-                let account = acme
-                    .new_account()
-                    .contacts(contacts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                let account = account
                     .with_auto_generated_ec_key()
                     .terms_of_service_agreed(true)
                     .send()
                     .await
                     .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?;
-
                 account_store
                     .put_account(acme_directory, PrivateKey(account.key().to_der().unwrap()))
                     .await
@@ -269,8 +342,6 @@ where
             }
 
             account_store.boxed()
-        } else {
-            return Err(AcmeAcceptorBuilderError::NoAccountProvided);
         };
 
         Ok(AcmeAcceptor::start(

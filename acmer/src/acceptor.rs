@@ -1,12 +1,10 @@
 use std::{
-    collections::HashSet,
     pin::{pin, Pin},
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
-use dashmap::DashSet;
 use papaleguas::{AcmeClient, OrderStatus};
 use rustls::{
     server::{Acceptor, WantsServerCert},
@@ -29,10 +27,11 @@ use crate::store::{
     MemoryAuthChallengeStore, MemoryCertStore,
 };
 
-pub use {builder::*, config::ConfigResolver};
+pub use {builder::*, config::ConfigResolver, domain_check::DomainCheck};
 
 mod builder;
 mod config;
+mod domain_check;
 
 const ACME_ALPN: &[u8] = b"acme-tls/1";
 
@@ -370,61 +369,5 @@ where
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         pin!(&mut self.stream).poll_shutdown(cx)
-    }
-}
-
-pub trait DomainCheck: Send + Sync {
-    fn allow_domain(&self, domain: &str) -> bool;
-}
-
-impl<F> DomainCheck for F
-where
-    F: Fn(&str) -> bool,
-    F: Send + Sync,
-{
-    fn allow_domain(&self, domain: &str) -> bool {
-        self(domain)
-    }
-}
-
-impl DomainCheck for &str {
-    fn allow_domain(&self, domain: &str) -> bool {
-        self == &domain
-    }
-}
-
-impl DomainCheck for String {
-    fn allow_domain(&self, domain: &str) -> bool {
-        self == domain
-    }
-}
-
-impl DomainCheck for bool {
-    fn allow_domain(&self, _domain: &str) -> bool {
-        *self
-    }
-}
-
-impl<const N: usize> DomainCheck for &[&str; N] {
-    fn allow_domain(&self, domain: &str) -> bool {
-        self.contains(&domain)
-    }
-}
-
-impl DomainCheck for HashSet<String> {
-    fn allow_domain(&self, domain: &str) -> bool {
-        self.contains(domain)
-    }
-}
-
-impl DomainCheck for DashSet<String> {
-    fn allow_domain(&self, domain: &str) -> bool {
-        self.contains(domain)
-    }
-}
-
-impl DomainCheck for Arc<DashSet<String>> {
-    fn allow_domain(&self, domain: &str) -> bool {
-        self.contains(domain)
     }
 }
