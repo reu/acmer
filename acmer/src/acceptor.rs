@@ -109,8 +109,12 @@ impl<S> AcmeAcceptor<S> {
 
                 let task = tokio::spawn(async move {
                     let acceptor = LazyConfigAcceptor::new(Acceptor::default(), conn);
+
+                    trace!("starting handshake");
                     let handshake = acceptor.await?;
                     let hello = handshake.client_hello();
+
+                    trace!("handshake started");
 
                     let has_acme_tls = hello
                         .alpn()
@@ -118,6 +122,7 @@ impl<S> AcmeAcceptor<S> {
                         .unwrap_or(false);
 
                     let domain = hello.server_name().unwrap_or_default().to_owned();
+                    trace!(domain, "tls sni");
 
                     if !domain_check.allow_domain(&domain) {
                         debug!(domain, "domain not allowed");
@@ -128,6 +133,8 @@ impl<S> AcmeAcceptor<S> {
                         let mut cert = certs.get_cert(&domain).await?;
 
                         if has_acme_tls {
+                            debug!(domain, "acme tls validation received");
+
                             if let Some(auth) = auths.get_challenge(&domain).await? {
                                 debug!(domain, "answering validation request");
 

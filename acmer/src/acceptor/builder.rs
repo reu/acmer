@@ -10,6 +10,7 @@ use tokio_stream::{
     wrappers::{TcpListenerStream, UnixListenerStream},
     Stream,
 };
+use tracing::info;
 
 use crate::store::{
     AccountStore, AuthChallengeStore, BoxedAccountStoreExt, CertStore, MemoryAccountStore,
@@ -345,11 +346,12 @@ where
             .terms_of_service_agreed(true);
 
         let account_store = if let Some(key) = private_key {
-            account
+            let account = account
                 .private_key(&key)
                 .send()
                 .await
                 .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?;
+            info!(kid = %account.kid(), "account from key created");
             SingleAccountStore::new(PrivateKey(key)).boxed()
         } else {
             let account_store = self.account_store;
@@ -366,6 +368,7 @@ where
                     .send()
                     .await
                     .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?;
+                info!(kid = %account.kid(), "new account created");
                 account_store
                     .put_account(acme_directory, PrivateKey(account.key().to_der().unwrap()))
                     .await
