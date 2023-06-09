@@ -24,7 +24,7 @@ use tracing::{debug, error, trace};
 
 use crate::store::{
     AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, MemoryAccountStore,
-    MemoryAuthChallengeStore, MemoryCertStore,
+    MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore, Order, OrderStore,
 };
 
 pub use {builder::*, config::ConfigResolver, domain_check::DomainCheck};
@@ -50,6 +50,7 @@ impl AcmeAcceptor<TcpStream> {
     pub fn builder() -> AcmeAcceptorBuilder<
         MemoryAuthChallengeStore,
         MemoryCertStore,
+        MemoryOrderStore,
         MemoryAccountStore,
         bool,
         ConfigBuilder<ServerConfig, WantsServerCert>,
@@ -59,10 +60,12 @@ impl AcmeAcceptor<TcpStream> {
 }
 
 impl<S> AcmeAcceptor<S> {
+    #[allow(clippy::too_many_arguments)]
     fn start<L>(
         acme_client: AcmeClient,
         mut incoming: L,
         certs: impl CertStore + 'static,
+        orders: impl OrderStore + 'static,
         auths: impl AuthChallengeStore + 'static,
         accounts: impl AccountStore + 'static,
         domain_check: impl DomainCheck + 'static,
@@ -76,6 +79,7 @@ impl<S> AcmeAcceptor<S> {
         let (tx, rx) = mpsc::unbounded_channel::<io::Result<_>>();
 
         let certs = Arc::new(certs);
+        let orders = Arc::new(orders);
         let auths = Arc::new(auths);
         let accounts = Arc::new(accounts);
         let domain_check = Arc::new(domain_check);
@@ -95,8 +99,9 @@ impl<S> AcmeAcceptor<S> {
                     None => break,
                 };
 
-                let auths = auths.clone();
                 let certs = certs.clone();
+                let orders = orders.clone();
+                let auths = auths.clone();
                 let accounts = accounts.clone();
                 let acme_client = acme_client.clone();
                 let domain_check = domain_check.clone();
@@ -210,15 +215,35 @@ impl<S> AcmeAcceptor<S> {
                                 }
                             };
 
-                            // TODO: check if there is a pending order for this domain before
-                            // creating a new one
+                            let existing_orders =
+                                orders.list_orders(&domain).await.unwrap_or_default();
 
-                            let order = acme_account
-                                .new_order()
-                                .dns(&domain)
-                                .send()
-                                .await
-                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                            let existing_order = if let Some(order) = existing_orders
+                                .into_iter()
+                                .find(|order| order.status != OrderStatus::Invalid)
+                            {
+                                match acme_account.find_order(&order.url).await {
+                                    Ok(order) => Some(order),
+                                    Err(_) => {
+                                        orders.remove_order(&domain, &order.url).await.ok();
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+
+                            let order = match existing_order {
+                                Some(order) => order,
+                                None => acme_account
+                                    .new_order()
+                                    .dns(&domain)
+                                    .send()
+                                    .await
+                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
+                            };
+
+                            orders.upsert_order(&domain, Order::from(&order)).await.ok();
 
                             let authorizations = order
                                 .authorizations()
@@ -255,6 +280,8 @@ impl<S> AcmeAcceptor<S> {
                                     .find_order(order.url())
                                     .await
                                     .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+                                orders.upsert_order(&domain, Order::from(&order)).await.ok();
 
                                 trace!(domain, status = ?order.status(), order = order.url(), "acme order status");
                                 match order.status() {
@@ -296,6 +323,8 @@ impl<S> AcmeAcceptor<S> {
                                 .collect::<Vec<Certificate>>();
 
                             certs.put_cert(&domain, key, cert).await?;
+
+                            orders.remove_order(&domain, order.url()).await.ok();
 
                             continue;
                         }

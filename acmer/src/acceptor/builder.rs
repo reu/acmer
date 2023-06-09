@@ -13,18 +13,19 @@ use tokio_stream::{
 
 use crate::store::{
     AccountStore, AuthChallengeStore, BoxedAccountStoreExt, CertStore, MemoryAccountStore,
-    MemoryAuthChallengeStore, MemoryCertStore, SingleAccountStore,
+    MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore, OrderStore, SingleAccountStore,
 };
 
 use super::{config::ConfigResolver, domain_check::DomainCheck, AcmeAcceptor};
 
-pub struct AcmeAcceptorBuilder<Auth, Cert, Acc, Domain, Config> {
+pub struct AcmeAcceptorBuilder<Auth, Cert, Order, Acc, Domain, Config> {
     http_client: reqwest::Client,
     acme_directory: String,
     account_pk: Option<AccountKey>,
     contacts: Option<Vec<String>>,
     challenge_store: Auth,
     cert_store: Cert,
+    order_store: Order,
     account_store: Acc,
     domain_checker: Domain,
     config_resolver: Config,
@@ -40,6 +41,7 @@ impl Default
     for AcmeAcceptorBuilder<
         MemoryAuthChallengeStore,
         MemoryCertStore,
+        MemoryOrderStore,
         MemoryAccountStore,
         bool,
         ConfigBuilder<ServerConfig, WantsServerCert>,
@@ -53,6 +55,7 @@ impl Default
             contacts: None,
             challenge_store: MemoryAuthChallengeStore::default(),
             cert_store: MemoryCertStore::default(),
+            order_store: MemoryOrderStore::default(),
             account_store: MemoryAccountStore::default(),
             domain_checker: true,
             config_resolver: ServerConfig::builder()
@@ -76,9 +79,11 @@ pub enum AcmeAcceptorBuilderError {
 
 type BuilderResult<S> = Result<AcmeAcceptor<S>, AcmeAcceptorBuilderError>;
 
-impl<Auth, Cert, Acc, Domain, Config> AcmeAcceptorBuilder<Auth, Cert, Acc, Domain, Config>
+impl<Auth, Cert, Order, Acc, Domain, Config>
+    AcmeAcceptorBuilder<Auth, Cert, Order, Acc, Domain, Config>
 where
     Cert: CertStore + 'static,
+    Order: OrderStore + 'static,
     Auth: AuthChallengeStore + 'static,
     Acc: AccountStore + 'static,
     Domain: DomainCheck + 'static,
@@ -155,7 +160,7 @@ where
     pub fn allowed_domains<D>(
         self,
         domain_checker: D,
-    ) -> AcmeAcceptorBuilder<Auth, Cert, Acc, D, Config>
+    ) -> AcmeAcceptorBuilder<Auth, Cert, Order, Acc, D, Config>
     where
         D: DomainCheck + 'static,
     {
@@ -166,6 +171,7 @@ where
             contacts: self.contacts,
             challenge_store: self.challenge_store,
             cert_store: self.cert_store,
+            order_store: self.order_store,
             account_store: self.account_store,
             domain_checker,
             config_resolver: self.config_resolver,
@@ -175,7 +181,7 @@ where
     pub fn with_rustls_config<C>(
         self,
         config_resolver: C,
-    ) -> AcmeAcceptorBuilder<Auth, Cert, Acc, Domain, C>
+    ) -> AcmeAcceptorBuilder<Auth, Cert, Order, Acc, Domain, C>
     where
         C: ConfigResolver + 'static,
     {
@@ -186,6 +192,7 @@ where
             contacts: self.contacts,
             challenge_store: self.challenge_store,
             cert_store: self.cert_store,
+            order_store: self.order_store,
             account_store: self.account_store,
             domain_checker: self.domain_checker,
             config_resolver,
@@ -195,7 +202,7 @@ where
     pub fn with_auth_challenge_store<A>(
         self,
         challenge_store: A,
-    ) -> AcmeAcceptorBuilder<A, Cert, Acc, Domain, Config>
+    ) -> AcmeAcceptorBuilder<A, Cert, Order, Acc, Domain, Config>
     where
         A: AuthChallengeStore + 'static,
     {
@@ -206,6 +213,7 @@ where
             contacts: self.contacts,
             challenge_store,
             cert_store: self.cert_store,
+            order_store: self.order_store,
             account_store: self.account_store,
             domain_checker: self.domain_checker,
             config_resolver: self.config_resolver,
@@ -215,7 +223,7 @@ where
     pub fn with_cert_store<C>(
         self,
         cert_store: C,
-    ) -> AcmeAcceptorBuilder<Auth, C, Acc, Domain, Config>
+    ) -> AcmeAcceptorBuilder<Auth, C, Order, Acc, Domain, Config>
     where
         C: CertStore + 'static,
     {
@@ -226,6 +234,28 @@ where
             contacts: self.contacts,
             challenge_store: self.challenge_store,
             cert_store,
+            order_store: self.order_store,
+            account_store: self.account_store,
+            domain_checker: self.domain_checker,
+            config_resolver: self.config_resolver,
+        }
+    }
+
+    pub fn with_order_store<O>(
+        self,
+        order_store: O,
+    ) -> AcmeAcceptorBuilder<Auth, Cert, O, Acc, Domain, Config>
+    where
+        O: OrderStore + 'static,
+    {
+        AcmeAcceptorBuilder {
+            http_client: self.http_client,
+            acme_directory: self.acme_directory,
+            account_pk: self.account_pk,
+            contacts: self.contacts,
+            challenge_store: self.challenge_store,
+            cert_store: self.cert_store,
+            order_store,
             account_store: self.account_store,
             domain_checker: self.domain_checker,
             config_resolver: self.config_resolver,
@@ -235,7 +265,7 @@ where
     pub fn with_account_store<A>(
         self,
         account_store: A,
-    ) -> AcmeAcceptorBuilder<Auth, Cert, A, Domain, Config>
+    ) -> AcmeAcceptorBuilder<Auth, Cert, Order, A, Domain, Config>
     where
         A: AccountStore + 'static,
     {
@@ -246,6 +276,7 @@ where
             contacts: self.contacts,
             challenge_store: self.challenge_store,
             cert_store: self.cert_store,
+            order_store: self.order_store,
             account_store,
             domain_checker: self.domain_checker,
             config_resolver: self.config_resolver,
@@ -348,6 +379,7 @@ where
             acme,
             incoming,
             self.cert_store,
+            self.order_store,
             self.challenge_store,
             account_store,
             self.domain_checker,

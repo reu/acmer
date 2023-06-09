@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     error::Error,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -8,8 +9,8 @@ use async_trait::async_trait;
 use aws_sdk_dynamodb::{
     error::CreateTableError,
     model::{
-        AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
-        ScalarAttributeType, TableStatus, TimeToLiveSpecification,
+        AttributeDefinition, AttributeValue, BillingMode, ComparisonOperator, Condition,
+        KeySchemaElement, KeyType, ScalarAttributeType, TableStatus, TimeToLiveSpecification,
     },
     output::GetItemOutput,
     types::{Blob, SdkError},
@@ -19,11 +20,14 @@ use pem_rfc7468 as pem;
 use rand::Rng;
 use rustls::{Certificate, PrivateKey};
 use rustls_pemfile as pemfile;
+use serde_json as json;
 use tokio::{io, time::sleep};
 
-use super::{AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore};
+use super::{
+    AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, Order, OrderStore,
+};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DynamodbStore {
     client: Arc<Client>,
     table_name: String,
@@ -84,6 +88,72 @@ impl DynamodbStore {
             .send()
             .await
             .map(|_| ())
+    }
+
+    pub async fn create_orders_table(&self) -> Result<(), Box<dyn Error>> {
+        self.client
+            .create_table()
+            .table_name(&self.table_name)
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name("hostname")
+                    .key_type(KeyType::Hash)
+                    .build(),
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name("order_url")
+                    .key_type(KeyType::Range)
+                    .build(),
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("hostname")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build(),
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("order_url")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build(),
+            )
+            .billing_mode(BillingMode::PayPerRequest)
+            .send()
+            .await?;
+
+        loop {
+            sleep(Duration::from_secs(5)).await;
+
+            let description = self
+                .client
+                .describe_table()
+                .table_name(&self.table_name)
+                .send()
+                .await?;
+
+            if let Some(table) = description.table() {
+                match table.table_status() {
+                    Some(TableStatus::Active) => break,
+                    Some(TableStatus::Deleting) => return Err("Table is being deleted".into()),
+                    _ => continue,
+                }
+            };
+        }
+
+        self.client
+            .update_time_to_live()
+            .table_name(&self.table_name)
+            .time_to_live_specification(
+                TimeToLiveSpecification::builder()
+                    .attribute_name("ttl")
+                    .enabled(true)
+                    .build(),
+            )
+            .send()
+            .await?;
+
+        Ok(())
     }
 
     pub async fn create_auth_challenges_table(&self) -> Result<(), Box<dyn Error>> {
@@ -207,6 +277,71 @@ impl CertStore for DynamodbStore {
             .await
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl OrderStore for DynamodbStore {
+    async fn list_orders(&self, domain: &str) -> io::Result<HashSet<Order>> {
+        let orders = self
+            .client
+            .query()
+            .table_name(&self.table_name)
+            .key_conditions(
+                "hostname",
+                Condition::builder()
+                    .comparison_operator(ComparisonOperator::Eq)
+                    .attribute_value_list(AttributeValue::S(domain.to_owned()))
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+            .items()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| json::from_str(item.get("order")?.as_s().ok()?).ok())
+                    .collect::<HashSet<Order>>()
+            })
+            .unwrap_or_default();
+        Ok(orders)
+    }
+
+    async fn upsert_order(&self, domain: &str, order: Order) -> io::Result<()> {
+        let req = self
+            .client
+            .put_item()
+            .table_name(&self.table_name)
+            .item("hostname", AttributeValue::S(domain.to_owned()))
+            .item("order_url", AttributeValue::S(order.url.clone()))
+            .item(
+                "order",
+                AttributeValue::S(json::to_string(&order).unwrap_or_default()),
+            );
+
+        let req = match order.expires {
+            None => req,
+            Some(time) => req.item("ttl", AttributeValue::N(time.unix_timestamp().to_string())),
+        };
+
+        req.send()
+            .await
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+        Ok(())
+    }
+
+    async fn remove_order(&self, domain: &str, order_url: &str) -> io::Result<()> {
+        self.client
+            .delete_item()
+            .table_name(&self.table_name)
+            .key("hostname", AttributeValue::S(domain.to_string()))
+            .key("order_url", AttributeValue::S(order_url.to_string()))
+            .send()
+            .await
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         Ok(())
     }
 }
@@ -355,7 +490,7 @@ impl AuthChallengeDomainLock for DynamodbAuthChallengeLock {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CertDynamodbStore(DynamodbStore);
 
 impl CertDynamodbStore {
@@ -388,7 +523,39 @@ impl CertStore for CertDynamodbStore {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct OrderDynamodbStore(DynamodbStore);
+
+impl OrderDynamodbStore {
+    pub fn new(client: Client, table_name: String) -> Self {
+        Self(DynamodbStore::new(client, table_name))
+    }
+
+    pub async fn from_env(table_name: impl Into<String>) -> Self {
+        Self(DynamodbStore::from_env(table_name).await)
+    }
+
+    pub async fn create_table(&self) -> Result<(), Box<dyn Error>> {
+        self.0.create_orders_table().await
+    }
+}
+
+#[async_trait]
+impl OrderStore for OrderDynamodbStore {
+    async fn list_orders(&self, domain: &str) -> io::Result<HashSet<Order>> {
+        self.0.list_orders(domain).await
+    }
+
+    async fn upsert_order(&self, domain: &str, order: Order) -> io::Result<()> {
+        self.0.upsert_order(domain, order).await
+    }
+
+    async fn remove_order(&self, domain: &str, order_url: &str) -> io::Result<()> {
+        self.0.remove_order(domain, order_url).await
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct AccountDynamodbStore(DynamodbStore);
 
 impl AccountDynamodbStore {
@@ -416,7 +583,7 @@ impl AccountStore for AccountDynamodbStore {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AuthChallengeDynamodbStore(DynamodbStore);
 
 impl AuthChallengeDynamodbStore {
@@ -455,12 +622,11 @@ mod test {
     use aws_sdk_dynamodb::{Config, Endpoint, Region};
     use rand::distributions::{Alphanumeric, DistString};
 
-    use crate::store::BoxedAuthChallengeStoreExt;
+    use crate::store::{BoxedAuthChallengeStoreExt, OrderStatus};
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_dynamo_lock() {
+    async fn create_dynamodb_client() -> Client {
         let creds = aws_types::Credentials::from_keys(
             "XXXXXXXXXXXXXXXXXXXX",
             "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY",
@@ -479,8 +645,14 @@ mod test {
             panic!("could not connect to dynamodb-local on http://localhost:8000");
         }
 
-        let table_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        dynamo
+    }
 
+    #[tokio::test]
+    async fn test_dynamo_lock() {
+        let dynamo = create_dynamodb_client().await;
+
+        let table_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
         let store = AuthChallengeDynamodbStore::new(dynamo, table_name);
 
         store.create_table().await.unwrap();
@@ -518,5 +690,65 @@ mod test {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_order_dynamodb_store() {
+        let dynamo = create_dynamodb_client().await;
+
+        let table_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let store = OrderDynamodbStore::new(dynamo, table_name);
+
+        store.create_table().await.unwrap();
+
+        let order1 = Order {
+            url: "http://order/1".to_string(),
+            status: OrderStatus::Ready,
+            expires: None,
+        };
+
+        let order2 = Order {
+            url: "http://order/2".to_string(),
+            status: OrderStatus::Invalid,
+            expires: None,
+        };
+
+        let order3 = Order {
+            url: "http://order/3".to_string(),
+            status: OrderStatus::Invalid,
+            expires: None,
+        };
+
+        store.upsert_order("lol.com", order1.clone()).await.unwrap();
+        store.upsert_order("lol.com", order2.clone()).await.unwrap();
+        store.upsert_order("wut.com", order3.clone()).await.unwrap();
+
+        let orders = store.list_orders("lol.com").await.unwrap();
+        assert!(orders.contains(&order1));
+        assert!(orders.contains(&order2));
+        assert!(!orders.contains(&order3));
+
+        let orders = store.list_orders("wut.com").await.unwrap();
+        assert!(orders.contains(&order3));
+
+        store.remove_order("lol.com", &order1.url).await.unwrap();
+        let orders = store.list_orders("lol.com").await.unwrap();
+        assert!(!orders.contains(&order1));
+        assert!(orders.contains(&order2));
+
+        let orders = store.list_orders("wut.com").await.unwrap();
+        assert!(orders.contains(&order3));
+        store
+            .upsert_order(
+                "wut.com",
+                Order {
+                    status: OrderStatus::Valid,
+                    ..order3.clone()
+                },
+            )
+            .await
+            .unwrap();
+        let orders = store.list_orders("wut.com").await.unwrap();
+        assert_eq!(orders.get(&order3).unwrap().status, OrderStatus::Valid);
     }
 }

@@ -1,8 +1,15 @@
-use std::{collections::HashMap, sync::Arc, time::SystemTime};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::SystemTime,
+};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+pub use papaleguas::OrderStatus;
 use rustls::{Certificate, PrivateKey};
+use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use tokio::{
     io,
     sync::{OwnedRwLockWriteGuard, RwLock},
@@ -30,6 +37,44 @@ pub trait CertStore: Send + Sync {
         key: PrivateKey,
         cert: Vec<Certificate>,
     ) -> io::Result<()>;
+}
+
+#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Order {
+    pub url: String,
+    pub status: OrderStatus,
+    #[serde(default, with = "time::serde::iso8601::option")]
+    pub expires: Option<OffsetDateTime>,
+}
+
+impl std::hash::Hash for Order {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.url.hash(state)
+    }
+}
+
+impl PartialEq for Order {
+    fn eq(&self, other: &Self) -> bool {
+        self.url.eq(&other.url)
+    }
+}
+
+impl From<&papaleguas::Order> for Order {
+    fn from(value: &papaleguas::Order) -> Self {
+        Self {
+            url: value.url().to_owned(),
+            status: *value.status(),
+            expires: value.expires(),
+        }
+    }
+}
+
+#[async_trait]
+pub trait OrderStore: Send + Sync {
+    async fn list_orders(&self, domain: &str) -> io::Result<HashSet<Order>>;
+    async fn upsert_order(&self, domain: &str, order: Order) -> io::Result<()>;
+    async fn remove_order(&self, domain: &str, order_url: &str) -> io::Result<()>;
 }
 
 #[async_trait]
@@ -101,6 +146,54 @@ impl CertStore for MemoryCertStore {
         cert: Vec<Certificate>,
     ) -> io::Result<()> {
         self.0.put_cert(domain, key, cert).await
+    }
+}
+
+#[async_trait]
+impl OrderStore for DashMap<String, HashSet<Order>> {
+    async fn list_orders(&self, domain: &str) -> io::Result<HashSet<Order>> {
+        let orders = self
+            .get(domain)
+            .map(|item| item.value().clone())
+            .unwrap_or_default();
+        Ok(orders)
+    }
+
+    async fn upsert_order(&self, domain: &str, order: Order) -> io::Result<()> {
+        let mut orders = self.entry(domain.to_string()).or_default();
+        orders.replace(order);
+        Ok(())
+    }
+
+    async fn remove_order(&self, domain: &str, order_url: &str) -> io::Result<()> {
+        self.entry(domain.to_string())
+            .and_modify(|orders| {
+                orders.remove(&Order {
+                    url: order_url.to_string(),
+                    status: OrderStatus::Ready,
+                    expires: None,
+                });
+            })
+            .or_default();
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct MemoryOrderStore(DashMap<String, HashSet<Order>>);
+
+#[async_trait]
+impl OrderStore for MemoryOrderStore {
+    async fn list_orders(&self, domain: &str) -> io::Result<HashSet<Order>> {
+        self.0.list_orders(domain).await
+    }
+
+    async fn upsert_order(&self, domain: &str, order: Order) -> io::Result<()> {
+        self.0.upsert_order(domain, order).await
+    }
+
+    async fn remove_order(&self, domain: &str, order_url: &str) -> io::Result<()> {
+        self.0.remove_order(domain, order_url).await
     }
 }
 
@@ -324,12 +417,15 @@ impl AccountStore for SingleAccountStore {
 
 #[cfg(test)]
 mod test {
+    use papaleguas::OrderStatus;
     use rustls::{Certificate, PrivateKey};
 
     use crate::store::{
         AuthChallengeDomainLock, AuthChallengeStore, CertStore, MemoryAuthChallengeStore,
-        MemoryCertStore,
+        MemoryCertStore, MemoryOrderStore, OrderStore,
     };
+
+    use super::Order;
 
     #[tokio::test]
     async fn test_memory_store() {
@@ -348,6 +444,61 @@ mod test {
         let (stored_key, stored_cert) = store.get_cert("lol.wut").await.unwrap().unwrap();
         assert_eq!(stored_key, pkey);
         assert_eq!(stored_cert, cert);
+    }
+
+    #[tokio::test]
+    async fn test_order_memory_store() {
+        let store = MemoryOrderStore::default();
+
+        let order1 = Order {
+            url: "http://order/1".to_string(),
+            status: OrderStatus::Ready,
+            expires: None,
+        };
+
+        let order2 = Order {
+            url: "http://order/2".to_string(),
+            status: OrderStatus::Invalid,
+            expires: None,
+        };
+
+        let order3 = Order {
+            url: "http://order/3".to_string(),
+            status: OrderStatus::Invalid,
+            expires: None,
+        };
+
+        store.upsert_order("lol.com", order1.clone()).await.unwrap();
+        store.upsert_order("lol.com", order2.clone()).await.unwrap();
+        store.upsert_order("wut.com", order3.clone()).await.unwrap();
+
+        let orders = store.list_orders("lol.com").await.unwrap();
+        assert!(orders.contains(&order1));
+        assert!(orders.contains(&order2));
+        assert!(!orders.contains(&order3));
+
+        let orders = store.list_orders("wut.com").await.unwrap();
+        assert!(orders.contains(&order3));
+
+        store.remove_order("lol.com", &order1.url).await.unwrap();
+        let orders = store.list_orders("lol.com").await.unwrap();
+        assert!(!orders.contains(&order1));
+        assert!(orders.contains(&order2));
+
+        let orders = store.list_orders("wut.com").await.unwrap();
+        assert!(orders.contains(&order3));
+        store
+            .upsert_order(
+                "wut.com",
+                Order {
+                    status: OrderStatus::Valid,
+                    ..order3.clone()
+                },
+            )
+            .await
+            .unwrap();
+        let orders = store.list_orders("wut.com").await.unwrap();
+        assert_eq!(orders.get(&order3).unwrap().status, OrderStatus::Valid);
     }
 
     #[tokio::test]
