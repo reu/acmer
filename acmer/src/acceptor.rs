@@ -2,7 +2,7 @@ use std::{
     pin::{pin, Pin},
     sync::Arc,
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use papaleguas::{AcmeClient, OrderStatus};
@@ -220,7 +220,11 @@ impl<S> AcmeAcceptor<S> {
 
                             let existing_order = if let Some(order) = existing_orders
                                 .into_iter()
-                                .find(|order| order.status != OrderStatus::Invalid)
+                                .filter(|order| order.status != OrderStatus::Invalid)
+                                .find(|order| match order.expires {
+                                    Some(exp) => exp > SystemTime::now(),
+                                    _ => true,
+                                })
                             {
                                 match acme_account.find_order(&order.url).await {
                                     Ok(order) => Some(order),
@@ -235,44 +239,51 @@ impl<S> AcmeAcceptor<S> {
 
                             let order = match existing_order {
                                 Some(order) => order,
-                                None => acme_account
-                                    .new_order()
-                                    .dns(&domain)
-                                    .send()
-                                    .await
-                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
+                                None => {
+                                    let order = acme_account
+                                        .new_order()
+                                        .dns(&domain)
+                                        .send()
+                                        .await
+                                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                    orders.upsert_order(&domain, Order::from(&order)).await.ok();
+                                    order
+                                }
                             };
 
-                            orders.upsert_order(&domain, Order::from(&order)).await.ok();
+                            if order.status() == &OrderStatus::Pending {
+                                let authorizations = order
+                                    .authorizations()
+                                    .await
+                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-                            let authorizations = order
-                                .authorizations()
-                                .await
-                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                let challenge = authorizations
+                                    .iter()
+                                    .find_map(|auth| auth.tls_alpn01_challenge())
+                                    .ok_or(io::Error::new(
+                                        io::ErrorKind::Other,
+                                        format!(
+                                            "tls alpn01 challenge not found for order {}",
+                                            order.url()
+                                        ),
+                                    ))?;
 
-                            let challenge = authorizations
-                                .iter()
-                                .find_map(|auth| auth.tls_alpn01_challenge())
-                                .ok_or(io::Error::new(
-                                    io::ErrorKind::Other,
-                                    format!(
-                                        "tls alpn01 challenge not found for order {}",
-                                        order.url()
-                                    ),
-                                ))?;
+                                let key_auth = challenge
+                                    .key_authorization()
+                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-                            let key_auth = challenge
-                                .key_authorization()
-                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                auth.put_challenge(key_auth).await?;
 
-                            auth.put_challenge(key_auth).await?;
+                                drop(auth);
 
-                            drop(auth);
-
-                            challenge
-                                .validate()
-                                .await
-                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                challenge
+                                    .validate()
+                                    .await
+                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                            } else {
+                                trace!(domain, status = ?order.status(), order = order.url(), "domain already being challenged");
+                                drop(auth);
+                            }
 
                             let key = papaleguas::PrivateKey::random_ec_key(rand::thread_rng());
                             let cert = loop {
@@ -299,10 +310,11 @@ impl<S> AcmeAcceptor<S> {
                                         })?;
                                     }
                                     OrderStatus::Invalid => {
+                                        orders.remove_order(&domain, order.url()).await.ok();
                                         return Err(io::Error::new(
                                             io::ErrorKind::Other,
                                             format!("invalid order {}", order.url()),
-                                        ))
+                                        ));
                                     }
                                 }
                             };
