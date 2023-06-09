@@ -15,15 +15,15 @@ dynamodb-store = ["aws-config", "aws-sdk-dynamodb"]
 
 [dependencies]
 async-trait = "0.1.60"
-aws-config = { version = "0.52.0", optional = true }
-aws-sdk-dynamodb = { version = "0.22.0", optional = true }
-dashmap = "5.4.0"
+aws-config = { version = "0.52", optional = true }
+aws-sdk-dynamodb = { version = "0.22", optional = true }
+dashmap = "5.4"
 papaleguas = "0.0.8"
 pem-rfc7468 = "0.6.0"
-rand = "0.8.5"
-rcgen = "0.10.0"
-reqwest = { version = "0.11.18", default-features = false, features = ["json", "rustls-tls"] }
-rustls = "0.20.7"
+rand = "0.8"
+rcgen = "0.10"
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+rustls = "0.21"
 rustls-pemfile = "1.0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -31,7 +31,7 @@ sha2 = { version = "0.10.6", features = ["oid"] }
 thiserror = "1.0.40"
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 tokio = { version = "1.23.0", features = ["full"] }
-tokio-rustls = "0.23.4"
+tokio-rustls = "0.24"
 tokio-stream = { version = "0.1.11", features = ["io-util", "net"] }
 tracing = "0.1"
 x509-cert = { version = "0.1.1", features = ["std"] }

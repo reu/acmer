@@ -395,7 +395,7 @@ pub struct Connection<S> {
 
 impl<S> Connection<S> {
     pub fn sni(&self) -> &str {
-        self.stream.get_ref().1.sni_hostname().unwrap_or_default()
+        self.stream.get_ref().1.server_name().unwrap_or_default()
     }
 
     pub fn into_inner(self) -> TlsStream<S> {
