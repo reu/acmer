@@ -166,17 +166,25 @@ impl<S> AcmeAcceptor<S> {
                                 debug!(domain, "validation request of unknown domain");
                             }
                         } else if let Some((key, cert)) = cert.take() {
+                            trace!(domain, "establishing connection");
+
                             let config = ruslts_config
                                 .rustls_config(&domain, key, cert)
                                 .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-                            let conn = handshake.into_stream(Arc::new(config)).await?;
+                            match handshake.into_stream(Arc::new(config)).await {
+                                Ok(conn) => {
+                                    let conn = Connection { stream: conn };
+                                    trace!(domain, "connection established");
+                                    tx.send(Ok(conn)).ok();
+                                }
+                                Err(error) => {
+                                    error!(domain, %error, "failed to establish connection");
+                                    tx.send(Err(io::Error::new(io::ErrorKind::Other, error)))
+                                        .ok();
+                                }
+                            }
 
-                            let conn = Connection { stream: conn };
-
-                            trace!(domain, "connection established");
-
-                            tx.send(Ok(conn)).ok();
                             break;
                         } else if auths.get_challenge(&domain).await?.is_none() {
                             trace!(domain = ?domain, "starting validation challenge");
@@ -224,8 +232,7 @@ impl<S> AcmeAcceptor<S> {
                                 .find(|order| match order.expires {
                                     Some(exp) => exp > SystemTime::now(),
                                     _ => true,
-                                })
-                            {
+                                }) {
                                 match acme_account.find_order(&order.url).await {
                                     Ok(order) => Some(order),
                                     Err(_) => {
