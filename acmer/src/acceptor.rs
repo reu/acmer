@@ -317,7 +317,6 @@ impl<S> AcmeAcceptor<S> {
                                         })?;
                                     }
                                     OrderStatus::Invalid => {
-                                        orders.remove_order(&domain, order.url()).await.ok();
                                         return Err(io::Error::new(
                                             io::ErrorKind::Other,
                                             format!("invalid order {}", order.url()),
