@@ -1,8 +1,10 @@
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use rustls::{Certificate, PrivateKey};
 use tokio::io;
 
-use super::{AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore};
+use super::{AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, OrderStore, Order};
 
 pub struct BoxedCertStore(Box<dyn CertStore>);
 
@@ -35,6 +37,39 @@ pub trait BoxedCertStoreExt {
 impl<C: CertStore + 'static> BoxedCertStoreExt for C {
     fn boxed(self) -> BoxedCertStore {
         BoxedCertStore::new(self)
+    }
+}
+
+pub struct BoxedOrderStore(Box<dyn OrderStore>);
+
+impl BoxedOrderStore {
+    pub fn new(store: impl OrderStore + 'static) -> Self {
+        Self(Box::new(store))
+    }
+}
+
+#[async_trait]
+impl OrderStore for BoxedOrderStore {
+    async fn list_orders(&self, domain: &str) -> io::Result<HashSet<Order>> {
+        self.0.list_orders(domain).await
+    }
+
+    async fn upsert_order(&self, domain: &str, order: Order) -> io::Result<()> {
+        self.0.upsert_order(domain, order).await
+    }
+
+    async fn remove_order(&self, domain: &str, order_url: &str) -> io::Result<()> {
+        self.0.remove_order(domain, order_url).await
+    }
+}
+
+pub trait BoxedOrderStoreExt {
+    fn boxed(self) -> BoxedOrderStore;
+}
+
+impl<C: OrderStore + 'static> BoxedOrderStoreExt for C {
+    fn boxed(self) -> BoxedOrderStore {
+        BoxedOrderStore::new(self)
     }
 }
 
