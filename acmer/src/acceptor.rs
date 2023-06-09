@@ -133,10 +133,10 @@ impl<S> AcmeAcceptor<S> {
                         let mut cert = certs.get_cert(&domain).await?;
 
                         if has_acme_tls {
-                            debug!(domain, "acme tls validation received");
+                            debug!(domain, "tls-alpn-01 validation received");
 
                             if let Some(auth) = auths.get_challenge(&domain).await? {
-                                debug!(domain, "answering validation request");
+                                debug!(domain, "tls-alpn-01 answering validation request");
 
                                 let auth = Sha256::new().chain_update(auth).finalize();
 
@@ -150,9 +150,12 @@ impl<S> AcmeAcceptor<S> {
                                 })
                                 .unwrap();
 
+                                trace!(domain, "tls-alpn-01 certificate generated");
+
                                 let key = PrivateKey(cert.serialize_private_key_der());
                                 let cert = Certificate(cert.serialize_der().unwrap());
 
+                                trace!(domain, "finishing tls-alpn-01 handshake");
                                 let mut conn = handshake
                                     .into_stream(Arc::new({
                                         let mut config = ServerConfig::builder()
@@ -165,12 +168,13 @@ impl<S> AcmeAcceptor<S> {
                                     }))
                                     .await?;
 
+                                trace!(domain, "closing tls-alpn-01 connection");
                                 conn.shutdown().await.ok();
 
-                                debug!(domain, "answered validation request");
+                                debug!(domain, "tls-alpn-01 answered validation request");
                                 break;
                             } else {
-                                debug!(domain, "validation request of unknown domain");
+                                debug!(domain, "tls-alpn-01 validation request of unknown domain");
                             }
                         } else if let Some((key, cert)) = cert.take() {
                             trace!(domain, "establishing connection");
@@ -277,7 +281,7 @@ impl<S> AcmeAcceptor<S> {
                                     .ok_or(io::Error::new(
                                         io::ErrorKind::Other,
                                         format!(
-                                            "tls alpn01 challenge not found for order {}",
+                                            "tls-alpn-01 challenge not found for order {}",
                                             order.url()
                                         ),
                                     ))?;
