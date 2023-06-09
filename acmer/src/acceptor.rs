@@ -102,7 +102,7 @@ impl<S> AcmeAcceptor<S> {
                 let domain_check = domain_check.clone();
                 let ruslts_config = ruslts_config.clone();
 
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
                     let acceptor = LazyConfigAcceptor::new(Acceptor::default(), conn);
                     let handshake = acceptor.await?;
                     let hello = handshake.client_hello();
@@ -115,10 +115,8 @@ impl<S> AcmeAcceptor<S> {
                     let domain = hello.server_name().unwrap_or_default().to_owned();
 
                     if !domain_check.allow_domain(&domain) {
-                        return io::Result::Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "domain not allowed",
-                        ));
+                        debug!(domain, "domain not allowed");
+                        return io::Result::Ok(());
                     }
 
                     loop {
@@ -232,7 +230,10 @@ impl<S> AcmeAcceptor<S> {
                                 .find_map(|auth| auth.tls_alpn01_challenge())
                                 .ok_or(io::Error::new(
                                     io::ErrorKind::Other,
-                                    "tls alpn01 challenge not found",
+                                    format!(
+                                        "tls alpn01 challenge not found for order {}",
+                                        order.url()
+                                    ),
                                 ))?;
 
                             let key_auth = challenge
@@ -255,7 +256,7 @@ impl<S> AcmeAcceptor<S> {
                                     .await
                                     .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-                                trace!(domain, status = ?order.status(), "acme order status");
+                                trace!(domain, status = ?order.status(), order = order.url(), "acme order status");
                                 match order.status() {
                                     OrderStatus::Pending | OrderStatus::Processing => {
                                         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -273,7 +274,7 @@ impl<S> AcmeAcceptor<S> {
                                     OrderStatus::Invalid => {
                                         return Err(io::Error::new(
                                             io::ErrorKind::Other,
-                                            "invalid order",
+                                            format!("invalid order {}", order.url()),
                                         ))
                                     }
                                 }
@@ -301,6 +302,12 @@ impl<S> AcmeAcceptor<S> {
                     }
                     Ok::<_, io::Error>(())
                 });
+
+                match task.await {
+                    Ok(Err(error)) => error!(%error),
+                    Err(error) => error!(%error),
+                    _ => continue,
+                }
             }
             Ok::<_, io::Error>(())
         });
