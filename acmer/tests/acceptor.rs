@@ -4,7 +4,7 @@ use acmer::{
     store::{AccountStore, MemoryAccountStore},
     AcmeAcceptor,
 };
-use papaleguas::PrivateKey;
+use papaleguas::{AcmeClient, PrivateKey};
 use rand::thread_rng;
 use rustls::OwnedTrustAnchor;
 use test_log::test;
@@ -49,6 +49,37 @@ async fn create_account_with_auto_generated_key_test() -> Result<(), Box<dyn Err
 #[test(tokio::test)]
 async fn create_account_with_key_test() -> Result<(), Box<dyn Error + Send + Sync>> {
     let key = PrivateKey::random_ec_key(thread_rng());
+
+    AcmeAcceptor::builder()
+        .with_directory_url(DIRCTORY_URL)
+        .with_http_client(pebble_http_client().await.unwrap())
+        .with_account_pem_key(key.to_pem().unwrap())
+        .with_contact("test1@example.org")
+        .with_contact("test2@example.org")
+        .build_from_tcp_listener(TcpListener::bind("0.0.0.0:0").await?)
+        .await
+        .unwrap();
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn acceptor_with_created_account_test() -> Result<(), Box<dyn Error + Send + Sync>> {
+    let key = PrivateKey::random_ec_key(thread_rng());
+
+    let acme = AcmeClient::builder()
+        .http_client(pebble_http_client().await.unwrap())
+        .build_with_directory_url(DIRCTORY_URL)
+        .await
+        .unwrap();
+
+    acme.new_account()
+        .contact("test@example.org")
+        .private_key(key.clone())
+        .terms_of_service_agreed(true)
+        .send()
+        .await
+        .unwrap();
 
     AcmeAcceptor::builder()
         .with_directory_url(DIRCTORY_URL)
