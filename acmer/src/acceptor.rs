@@ -305,7 +305,7 @@ impl<S> AcmeAcceptor<S> {
                                             challenge.key_authorization().map_err(|err| {
                                                 io::Error::new(io::ErrorKind::Other, err)
                                             })?;
-                                        auth_challenge.add_http01(key_auth);
+                                        auth_challenge.add_http01(challenge.token(), key_auth);
                                     };
                                 }
 

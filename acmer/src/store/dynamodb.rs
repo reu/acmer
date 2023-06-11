@@ -670,13 +670,15 @@ mod test {
         assert!(&store.lock("wtf.wut").await.is_err());
 
         lock1
-            .put_challenge(AuthChallenge::new().with_http01("1"))
+            .put_challenge(AuthChallenge::new().with_tls_alpn01("1"))
             .await
             .unwrap();
         lock2
-            .put_challenge(AuthChallenge::new()
-                    .with_http01("http")
-                    .with_tls_alpn01("tls"))
+            .put_challenge(
+                AuthChallenge::new()
+                    .with_http01("token", "challenge")
+                    .with_tls_alpn01("tls"),
+            )
             .await
             .unwrap();
 
@@ -686,7 +688,7 @@ mod test {
                 .await
                 .unwrap()
                 .unwrap()
-                .http01_challenge(),
+                .tls_alpn01_challenge(),
             Some("1")
         );
 
@@ -698,7 +700,7 @@ mod test {
                 .unwrap()
                 .unwrap()
                 .http01_challenge(),
-            Some("http")
+            Some(("token", "challenge"))
         );
         assert_eq!(
             store

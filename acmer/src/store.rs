@@ -91,7 +91,7 @@ pub struct AuthChallenge {
 #[derive(Debug, PartialEq, Eq, Clone, Hash, Serialize, Deserialize)]
 enum ChallengeKind {
     TlsAlpn(String),
-    Http01(String),
+    Http01 { token: String, challenge: String },
 }
 
 impl AuthChallenge {
@@ -99,8 +99,8 @@ impl AuthChallenge {
         Default::default()
     }
 
-    pub fn with_http01(mut self, challenge: impl Into<String>) -> Self {
-        self.add_http01(challenge);
+    pub fn with_http01(mut self, token: impl Into<String>, challenge: impl Into<String>) -> Self {
+        self.add_http01(token, challenge);
         self
     }
 
@@ -109,9 +109,11 @@ impl AuthChallenge {
         self
     }
 
-    pub fn add_http01(&mut self, challenge: impl Into<String>) {
-        self.challenges
-            .push(ChallengeKind::Http01(challenge.into()));
+    pub fn add_http01(&mut self, token: impl Into<String>, challenge: impl Into<String>) {
+        self.challenges.push(ChallengeKind::Http01 {
+            token: token.into(),
+            challenge: challenge.into(),
+        });
     }
 
     pub fn add_tls_alpn01(&mut self, challenge: impl Into<String>) {
@@ -119,11 +121,13 @@ impl AuthChallenge {
             .push(ChallengeKind::TlsAlpn(challenge.into()));
     }
 
-    pub fn http01_challenge(&self) -> Option<&str> {
+    pub fn http01_challenge(&self) -> Option<(&str, &str)> {
         self.challenges
             .iter()
             .find_map(|challenge| match challenge {
-                ChallengeKind::Http01(challenge) => Some(challenge.as_str()),
+                ChallengeKind::Http01 { token, challenge } => {
+                    Some((token.as_str(), challenge.as_str()))
+                }
                 _ => None,
             })
     }
@@ -571,13 +575,13 @@ mod test {
         assert!(store.lock("wtf.wut").await.is_err());
 
         lock1
-            .put_challenge(AuthChallenge::new().with_http01("1"))
+            .put_challenge(AuthChallenge::new().with_tls_alpn01("1"))
             .await
             .unwrap();
         lock2
             .put_challenge(
                 AuthChallenge::new()
-                    .with_http01("http")
+                    .with_http01("token", "chall")
                     .with_tls_alpn01("tls"),
             )
             .await
@@ -590,7 +594,7 @@ mod test {
                 .await
                 .unwrap()
                 .unwrap()
-                .http01_challenge(),
+                .tls_alpn01_challenge(),
             Some("1")
         );
 
@@ -602,7 +606,7 @@ mod test {
                 .unwrap()
                 .unwrap()
                 .http01_challenge(),
-            Some("http")
+            Some(("token", "chall"))
         );
         assert_eq!(
             store
