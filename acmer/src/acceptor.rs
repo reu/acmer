@@ -23,8 +23,9 @@ use tokio_stream::{wrappers::UnboundedReceiverStream, Stream, StreamExt};
 use tracing::{debug, error, trace};
 
 use crate::store::{
-    AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, MemoryAccountStore,
-    MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore, Order, OrderStore,
+    AccountStore, AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore,
+    MemoryAccountStore, MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore, Order,
+    OrderStore,
 };
 
 pub use {builder::*, config::ConfigResolver, domain_check::DomainCheck};
@@ -70,6 +71,7 @@ impl<S> AcmeAcceptor<S> {
         accounts: impl AccountStore + 'static,
         domain_check: impl DomainCheck + 'static,
         ruslts_config: impl ConfigResolver + 'static,
+        http_challenge: bool,
     ) -> Self
     where
         L: Stream<Item = io::Result<S>>,
@@ -138,7 +140,11 @@ impl<S> AcmeAcceptor<S> {
                         if has_acme_tls {
                             debug!(domain, "tls-alpn-01 validation received");
 
-                            if let Some(auth) = auths.get_challenge(&domain).await? {
+                            if let Some(auth) = auths
+                                .get_challenge(&domain)
+                                .await?
+                                .and_then(|c| c.tls_alpn01_challenge().map(|c| c.to_owned()))
+                            {
                                 debug!(domain, "tls-alpn-01 answering validation request");
 
                                 let auth = Sha256::new().chain_update(auth).finalize();
@@ -278,30 +284,64 @@ impl<S> AcmeAcceptor<S> {
                                     .await
                                     .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-                                let challenge = authorizations
+                                let mut auth_challenge = AuthChallenge::new();
+
+                                if let Some(challenge) = authorizations
                                     .iter()
                                     .find_map(|auth| auth.tls_alpn01_challenge())
-                                    .ok_or(io::Error::new(
+                                {
+                                    let key_auth = challenge
+                                        .key_authorization()
+                                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                    auth_challenge.add_tls_alpn01(key_auth);
+                                };
+
+                                if http_challenge {
+                                    if let Some(challenge) = authorizations
+                                        .iter()
+                                        .find_map(|auth| auth.http01_challenge())
+                                    {
+                                        let key_auth =
+                                            challenge.key_authorization().map_err(|err| {
+                                                io::Error::new(io::ErrorKind::Other, err)
+                                            })?;
+                                        auth_challenge.add_http01(key_auth);
+                                    };
+                                }
+
+                                if auth_challenge.is_empty() {
+                                    return Err(io::Error::new(
                                         io::ErrorKind::Other,
-                                        format!(
-                                            "tls-alpn-01 challenge not found for order {}",
-                                            order.url()
-                                        ),
-                                    ))?;
+                                        format!("no available challenge for order {}", order.url()),
+                                    ));
+                                }
 
-                                let key_auth = challenge
-                                    .key_authorization()
-                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-
-                                auth.put_challenge(key_auth).await?;
+                                auth.put_challenge(auth_challenge).await?;
 
                                 drop(auth);
 
                                 trace!(domain, "ready to validate challenge");
-                                challenge
-                                    .validate()
-                                    .await
-                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+                                if let Some(challenge) = authorizations
+                                    .iter()
+                                    .find_map(|auth| auth.tls_alpn01_challenge())
+                                {
+                                    challenge
+                                        .validate()
+                                        .await
+                                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                };
+
+                                if http_challenge {
+                                    if let Some(challenge) = authorizations
+                                        .iter()
+                                        .find_map(|auth| auth.http01_challenge())
+                                    {
+                                        challenge.validate().await.map_err(|err| {
+                                            io::Error::new(io::ErrorKind::Other, err)
+                                        })?;
+                                    };
+                                }
                             } else {
                                 trace!(domain, status = ?order.status(), order = order.url(), "domain already being challenged");
                                 drop(auth);

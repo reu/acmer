@@ -83,17 +83,76 @@ pub trait AccountStore: Send + Sync {
     async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()>;
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthChallenge {
+    challenges: Vec<ChallengeKind>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash, Serialize, Deserialize)]
+enum ChallengeKind {
+    TlsAlpn(String),
+    Http01(String),
+}
+
+impl AuthChallenge {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn with_http01(mut self, challenge: impl Into<String>) -> Self {
+        self.add_http01(challenge);
+        self
+    }
+
+    pub fn with_tls_alpn01(mut self, challenge: impl Into<String>) -> Self {
+        self.add_tls_alpn01(challenge);
+        self
+    }
+
+    pub fn add_http01(&mut self, challenge: impl Into<String>) {
+        self.challenges
+            .push(ChallengeKind::Http01(challenge.into()));
+    }
+
+    pub fn add_tls_alpn01(&mut self, challenge: impl Into<String>) {
+        self.challenges
+            .push(ChallengeKind::TlsAlpn(challenge.into()));
+    }
+
+    pub fn http01_challenge(&self) -> Option<&str> {
+        self.challenges
+            .iter()
+            .find_map(|challenge| match challenge {
+                ChallengeKind::Http01(challenge) => Some(challenge.as_str()),
+                _ => None,
+            })
+    }
+
+    pub fn tls_alpn01_challenge(&self) -> Option<&str> {
+        self.challenges
+            .iter()
+            .find_map(|challenge| match challenge {
+                ChallengeKind::TlsAlpn(challenge) => Some(challenge.as_str()),
+                _ => None,
+            })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.challenges.is_empty()
+    }
+}
+
 #[async_trait]
 pub trait AuthChallengeStore: Send + Sync {
     type LockGuard: AuthChallengeDomainLock + Send;
-    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>>;
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<AuthChallenge>>;
     async fn lock(&self, domain: &str) -> io::Result<Self::LockGuard>;
     async fn unlock(&self, domain: &str) -> io::Result<()>;
 }
 
 #[async_trait]
 pub trait AuthChallengeDomainLock: Send + Sync {
-    async fn put_challenge(&mut self, challenge: String) -> io::Result<()>;
+    async fn put_challenge(&mut self, challenge: AuthChallenge) -> io::Result<()>;
 }
 
 #[async_trait]
@@ -225,16 +284,16 @@ impl AccountStore for MemoryAccountStore {
 
 #[derive(Debug, Default)]
 pub struct MemoryAuthChallengeStore {
-    store: DashMap<String, Arc<RwLock<String>>>,
+    store: DashMap<String, Arc<RwLock<AuthChallenge>>>,
 }
 
-pub struct MemoryAuthChallengeStoreGuard(OwnedRwLockWriteGuard<String>);
+pub struct MemoryAuthChallengeStoreGuard(OwnedRwLockWriteGuard<AuthChallenge>);
 
 #[async_trait]
 impl AuthChallengeStore for MemoryAuthChallengeStore {
     type LockGuard = MemoryAuthChallengeStoreGuard;
 
-    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<AuthChallenge>> {
         match self.store.get(domain) {
             Some(entry) => Ok(Some(entry.value().clone().read().await.clone())),
             None => Ok(None),
@@ -259,7 +318,7 @@ impl AuthChallengeStore for MemoryAuthChallengeStore {
 
 #[async_trait]
 impl AuthChallengeDomainLock for MemoryAuthChallengeStoreGuard {
-    async fn put_challenge(&mut self, challenge: String) -> io::Result<()> {
+    async fn put_challenge(&mut self, challenge: AuthChallenge) -> io::Result<()> {
         *self.0 = challenge;
         Ok(())
     }
@@ -421,8 +480,8 @@ mod test {
     use rustls::{Certificate, PrivateKey};
 
     use crate::store::{
-        AuthChallengeDomainLock, AuthChallengeStore, CertStore, MemoryAuthChallengeStore,
-        MemoryCertStore, MemoryOrderStore, OrderStore,
+        AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore,
+        MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore, OrderStore,
     };
 
     use super::Order;
@@ -511,14 +570,49 @@ mod test {
         let mut lock2 = store.lock("wtf.wut").await.unwrap();
         assert!(store.lock("wtf.wut").await.is_err());
 
-        lock1.put_challenge("1".to_string()).await.unwrap();
-        lock2.put_challenge("2".to_string()).await.unwrap();
+        lock1
+            .put_challenge(AuthChallenge::new().with_http01("1"))
+            .await
+            .unwrap();
+        lock2
+            .put_challenge(
+                AuthChallenge::new()
+                    .with_http01("http")
+                    .with_tls_alpn01("tls"),
+            )
+            .await
+            .unwrap();
 
         drop(lock1);
-        assert_eq!(store.get_challenge("lol.wut").await.unwrap().unwrap(), "1");
+        assert_eq!(
+            store
+                .get_challenge("lol.wut")
+                .await
+                .unwrap()
+                .unwrap()
+                .http01_challenge(),
+            Some("1")
+        );
 
         drop(lock2);
-        assert_eq!(store.get_challenge("wtf.wut").await.unwrap().unwrap(), "2");
+        assert_eq!(
+            store
+                .get_challenge("wtf.wut")
+                .await
+                .unwrap()
+                .unwrap()
+                .http01_challenge(),
+            Some("http")
+        );
+        assert_eq!(
+            store
+                .get_challenge("wtf.wut")
+                .await
+                .unwrap()
+                .unwrap()
+                .tls_alpn01_challenge(),
+            Some("tls")
+        );
 
         assert!(store.get_challenge("other.wut").await.unwrap().is_none());
     }

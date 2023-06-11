@@ -30,6 +30,7 @@ pub struct AcmeAcceptorBuilder<Auth, Cert, Order, Acc, Domain, Config> {
     account_store: Acc,
     domain_checker: Domain,
     config_resolver: Config,
+    http_challenge: bool,
 }
 
 #[derive(Debug)]
@@ -62,6 +63,7 @@ impl Default
             config_resolver: ServerConfig::builder()
                 .with_safe_defaults()
                 .with_no_client_auth(),
+            http_challenge: false,
         }
     }
 }
@@ -176,6 +178,14 @@ where
             account_store: self.account_store,
             domain_checker,
             config_resolver: self.config_resolver,
+            http_challenge: self.http_challenge,
+        }
+    }
+
+    pub fn allow_http_challenge(self, allow: bool) -> Self {
+        Self {
+            http_challenge: allow,
+            ..self
         }
     }
 
@@ -197,6 +207,7 @@ where
             account_store: self.account_store,
             domain_checker: self.domain_checker,
             config_resolver,
+            http_challenge: self.http_challenge,
         }
     }
 
@@ -218,6 +229,7 @@ where
             account_store: self.account_store,
             domain_checker: self.domain_checker,
             config_resolver: self.config_resolver,
+            http_challenge: self.http_challenge,
         }
     }
 
@@ -239,6 +251,7 @@ where
             account_store: self.account_store,
             domain_checker: self.domain_checker,
             config_resolver: self.config_resolver,
+            http_challenge: self.http_challenge,
         }
     }
 
@@ -260,6 +273,7 @@ where
             account_store: self.account_store,
             domain_checker: self.domain_checker,
             config_resolver: self.config_resolver,
+            http_challenge: self.http_challenge,
         }
     }
 
@@ -281,6 +295,7 @@ where
             account_store,
             domain_checker: self.domain_checker,
             config_resolver: self.config_resolver,
+            http_challenge: self.http_challenge,
         }
     }
 
@@ -387,6 +402,7 @@ where
             account_store,
             self.domain_checker,
             self.config_resolver,
+            self.http_challenge,
         ))
     }
 

@@ -24,7 +24,8 @@ use serde_json as json;
 use tokio::{io, time::sleep};
 
 use super::{
-    AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, Order, OrderStore,
+    AccountStore, AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore, Order,
+    OrderStore,
 };
 
 #[derive(Debug, Clone)]
@@ -380,7 +381,7 @@ impl AccountStore for DynamodbStore {
 impl AuthChallengeStore for DynamodbStore {
     type LockGuard = DynamodbAuthChallengeLock;
 
-    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<AuthChallenge>> {
         Ok(self
             .client
             .get_item()
@@ -390,7 +391,7 @@ impl AuthChallengeStore for DynamodbStore {
             .await
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
             .item()
-            .and_then(|item| item.get("challenge")?.as_s().ok().cloned()))
+            .and_then(|item| json::from_str(item.get("challenge")?.as_s().ok()?).ok()))
     }
 
     async fn lock(&self, domain: &str) -> io::Result<Self::LockGuard> {
@@ -464,12 +465,15 @@ pub struct DynamodbAuthChallengeLock {
 
 #[async_trait]
 impl AuthChallengeDomainLock for DynamodbAuthChallengeLock {
-    async fn put_challenge(&mut self, challenge: String) -> io::Result<()> {
+    async fn put_challenge(&mut self, challenge: AuthChallenge) -> io::Result<()> {
         self.client
             .put_item()
             .table_name(&self.table_name)
             .item("hostname", AttributeValue::S(self.domain.clone()))
-            .item("challenge", AttributeValue::S(challenge))
+            .item(
+                "challenge",
+                AttributeValue::S(json::to_string(&challenge).unwrap_or_default()),
+            )
             .item("lock_id", AttributeValue::B(Blob::new(self.lock_id)))
             .item(
                 "ttl",
@@ -604,7 +608,7 @@ impl AuthChallengeDynamodbStore {
 impl AuthChallengeStore for AuthChallengeDynamodbStore {
     type LockGuard = DynamodbAuthChallengeLock;
 
-    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<AuthChallenge>> {
         self.0.get_challenge(domain).await
     }
 
@@ -665,25 +669,45 @@ mod test {
         let mut lock2 = store.lock("wtf.wut").await.unwrap();
         assert!(&store.lock("wtf.wut").await.is_err());
 
-        lock1.put_challenge("1".to_string()).await.unwrap();
-        lock2.put_challenge("2".to_string()).await.unwrap();
+        lock1
+            .put_challenge(AuthChallenge::new().with_http01("1"))
+            .await
+            .unwrap();
+        lock2
+            .put_challenge(AuthChallenge::new()
+                    .with_http01("http")
+                    .with_tls_alpn01("tls"))
+            .await
+            .unwrap();
 
         drop(lock1);
         assert_eq!(
             AuthChallengeStore::get_challenge(&store, "lol.wut")
                 .await
                 .unwrap()
-                .unwrap(),
-            "1"
+                .unwrap()
+                .http01_challenge(),
+            Some("1")
         );
 
         drop(lock2);
         assert_eq!(
-            AuthChallengeStore::get_challenge(&store, "wtf.wut")
+            store
+                .get_challenge("wtf.wut")
                 .await
                 .unwrap()
-                .unwrap(),
-            "2"
+                .unwrap()
+                .http01_challenge(),
+            Some("http")
+        );
+        assert_eq!(
+            store
+                .get_challenge("wtf.wut")
+                .await
+                .unwrap()
+                .unwrap()
+                .tls_alpn01_challenge(),
+            Some("tls")
         );
 
         assert!(AuthChallengeStore::get_challenge(&store, "other.wut")

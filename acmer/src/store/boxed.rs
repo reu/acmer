@@ -5,7 +5,8 @@ use rustls::{Certificate, PrivateKey};
 use tokio::io;
 
 use super::{
-    AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, Order, OrderStore,
+    AccountStore, AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore, Order,
+    OrderStore,
 };
 
 pub struct BoxedCertStore(Box<dyn CertStore>);
@@ -119,7 +120,7 @@ where
 {
     type LockGuard = L;
 
-    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<AuthChallenge>> {
         self.inner.get_challenge(domain).await
     }
 
@@ -155,7 +156,7 @@ impl BoxedAuthChallengeStore {
 impl AuthChallengeStore for BoxedAuthChallengeStore {
     type LockGuard = BoxedAuthChallengeStoreGuard;
 
-    async fn get_challenge(&self, domain: &str) -> io::Result<Option<String>> {
+    async fn get_challenge(&self, domain: &str) -> io::Result<Option<AuthChallenge>> {
         self.0.get_challenge(domain).await
     }
 
@@ -182,7 +183,7 @@ pub struct BoxedAuthChallengeStoreGuard(Box<dyn AuthChallengeDomainLock + Send>)
 
 #[async_trait]
 impl AuthChallengeDomainLock for BoxedAuthChallengeStoreGuard {
-    async fn put_challenge(&mut self, challenge: String) -> io::Result<()> {
+    async fn put_challenge(&mut self, challenge: AuthChallenge) -> io::Result<()> {
         self.0.put_challenge(challenge).await
     }
 }
