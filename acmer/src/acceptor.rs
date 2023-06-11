@@ -111,7 +111,10 @@ impl<S> AcmeAcceptor<S> {
                     let acceptor = LazyConfigAcceptor::new(Acceptor::default(), conn);
 
                     trace!("starting handshake");
-                    let handshake = acceptor.await?;
+                    let Ok(handshake) = acceptor.await else {
+                        trace!("handlshake cancelled");
+                        return Ok(())
+                    };
                     let hello = handshake.client_hello();
 
                     trace!("handshake started");
@@ -198,12 +201,12 @@ impl<S> AcmeAcceptor<S> {
 
                             break;
                         } else if auths.get_challenge(&domain).await?.is_none() {
-                            trace!(domain = ?domain, "starting validation challenge");
+                            debug!(domain = ?domain, "starting validation challenge");
 
                             let mut auth = match auths.lock(&domain).await {
                                 Ok(lock) => lock,
                                 Err(_) => {
-                                    trace!(domain, "domain already being validated");
+                                    debug!(domain, "domain already being validated");
                                     tokio::time::sleep(Duration::from_secs(10)).await;
                                     continue;
                                 }
@@ -294,6 +297,7 @@ impl<S> AcmeAcceptor<S> {
 
                                 drop(auth);
 
+                                trace!(domain, "ready to validate challenge");
                                 challenge
                                     .validate()
                                     .await
@@ -312,7 +316,7 @@ impl<S> AcmeAcceptor<S> {
 
                                 orders.upsert_order(&domain, Order::from(&order)).await.ok();
 
-                                trace!(domain, status = ?order.status(), order = order.url(), "acme order status");
+                                debug!(domain, status = ?order.status(), order = order.url(), "acme order status");
                                 match order.status() {
                                     OrderStatus::Pending | OrderStatus::Processing => {
                                         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -353,6 +357,7 @@ impl<S> AcmeAcceptor<S> {
                                 .collect::<Vec<Certificate>>();
 
                             certs.put_cert(&domain, key, cert).await?;
+                            debug!(domain = ?domain, "certificate generated");
 
                             orders.remove_order(&domain, order.url()).await.ok();
 
