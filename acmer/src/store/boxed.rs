@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use rustls::{Certificate, PrivateKey};
 use tokio::io;
 
-use super::{AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, OrderStore, Order};
+use super::{
+    AccountStore, AuthChallengeDomainLock, AuthChallengeStore, CertStore, Order, OrderStore,
+};
 
 pub struct BoxedCertStore(Box<dyn CertStore>);
 
