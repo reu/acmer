@@ -389,15 +389,19 @@ impl<S: CertStore> CertStore for CachedCertStore<S> {
 
 pub struct CertExpirationTimeStore<S> {
     store: S,
-    validities: DashMap<String, SystemTime>,
+}
+
+fn cert_validity(cert: &[Certificate]) -> Option<SystemTime> {
+    cert.iter()
+        .filter_map(|cert| X509Certificate::from_der(&cert.0).ok())
+        .map(|cert| cert.tbs_certificate.validity)
+        .map(|val| val.not_after.to_system_time())
+        .min()
 }
 
 impl<S: CertStore> CertExpirationTimeStore<S> {
     pub fn new(store: S) -> Self {
-        CertExpirationTimeStore {
-            store,
-            validities: DashMap::new(),
-        }
+        CertExpirationTimeStore { store }
     }
 }
 
@@ -416,17 +420,20 @@ impl<C: CertStore + 'static> CertExpirationTimeStoreExt for C {
 #[async_trait]
 impl<S: CertStore> CertStore for CertExpirationTimeStore<S> {
     async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
-        match self.validities.get(domain) {
-            Some(validity) if validity.value() < &SystemTime::now() => {
-                let valid_until = validity
-                    .value()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                trace!(domain, until = valid_until, "cert is expired");
-                Ok(None)
-            }
-            _ => self.store.get_cert(domain).await,
+        match self.store.get_cert(domain).await? {
+            Some(cert) => match cert_validity(&cert.1) {
+                Some(validity) if validity < SystemTime::now() => {
+                    let valid_until = validity
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    trace!(domain, until = valid_until, "cert is expired");
+                    Ok(None)
+                }
+                Some(_validity) => Ok(Some(cert)),
+                None => Ok(None),
+            },
+            None => Ok(None),
         }
     }
 
@@ -436,25 +443,6 @@ impl<S: CertStore> CertStore for CertExpirationTimeStore<S> {
         key: PrivateKey,
         cert: Vec<Certificate>,
     ) -> io::Result<()> {
-        if let Some(not_after) = cert
-            .iter()
-            .filter_map(|cert| X509Certificate::from_der(&cert.0).ok())
-            .map(|cert| cert.tbs_certificate.validity)
-            .map(|val| val.not_after.to_system_time())
-            .min()
-        {
-            let valid_until = not_after
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            trace!(
-                domain,
-                until = valid_until,
-                "cert is valid until {valid_until}"
-            );
-            self.validities.insert(domain.to_owned(), not_after);
-        }
-
         self.store.put_cert(domain, key, cert).await
     }
 }
