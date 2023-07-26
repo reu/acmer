@@ -200,8 +200,7 @@ impl<S> AcmeAcceptor<S> {
                                 }
                                 Err(error) => {
                                     error!(domain, %error, "failed to establish connection");
-                                    tx.send(Err(io::Error::new(io::ErrorKind::Other, error)))
-                                        .ok();
+                                    return Err(error);
                                 }
                             }
 
