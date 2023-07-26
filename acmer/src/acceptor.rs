@@ -406,11 +406,13 @@ impl<S> AcmeAcceptor<S> {
                     Ok::<_, io::Error>(())
                 });
 
-                match task.await {
-                    Ok(Err(error)) => error!(%error),
-                    Err(error) => error!(%error),
-                    _ => continue,
-                }
+                tokio::spawn(async move {
+                    match task.await {
+                        Ok(Err(error)) => error!(%error),
+                        Err(error) => error!(%error),
+                        _ => {}
+                    }
+                });
             }
             Ok::<_, io::Error>(())
         });
