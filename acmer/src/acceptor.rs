@@ -87,7 +87,6 @@ impl<S> AcmeAcceptor<S> {
         let domain_check = Arc::new(domain_check);
         let ruslts_config = Arc::new(ruslts_config);
 
-        #[allow(unreachable_code)]
         let task = tokio::spawn(async move {
             loop {
                 let tx = tx.clone();
@@ -109,13 +108,13 @@ impl<S> AcmeAcceptor<S> {
                 let domain_check = domain_check.clone();
                 let ruslts_config = ruslts_config.clone();
 
-                let task = tokio::spawn(async move {
+                tokio::spawn(async move {
                     let acceptor = LazyConfigAcceptor::new(Acceptor::default(), conn);
 
                     trace!("starting handshake");
                     let Ok(handshake) = acceptor.await else {
                         trace!("handlshake cancelled");
-                        return Ok(())
+                        return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
                     };
                     let hello = handshake.client_hello();
 
@@ -131,7 +130,7 @@ impl<S> AcmeAcceptor<S> {
 
                     if !domain_check.allow_domain(&domain) {
                         debug!(domain, "domain not allowed");
-                        return io::Result::Ok(());
+                        return Ok(());
                     }
 
                     loop {
@@ -188,9 +187,7 @@ impl<S> AcmeAcceptor<S> {
                         } else if let Some((key, cert)) = cert.take() {
                             trace!(domain, "establishing connection");
 
-                            let config = ruslts_config
-                                .rustls_config(&domain, key, cert)
-                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                            let config = ruslts_config.rustls_config(&domain, key, cert)?;
 
                             match handshake.into_stream(Arc::new(config)).await {
                                 Ok(conn) => {
@@ -200,7 +197,7 @@ impl<S> AcmeAcceptor<S> {
                                 }
                                 Err(error) => {
                                     error!(domain, %error, "failed to establish connection");
-                                    return Err(error);
+                                    return Err(error)?;
                                 }
                             }
 
@@ -266,22 +263,15 @@ impl<S> AcmeAcceptor<S> {
                             let order = match existing_order {
                                 Some(order) => order,
                                 None => {
-                                    let order = acme_account
-                                        .new_order()
-                                        .dns(&domain)
-                                        .send()
-                                        .await
-                                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                    let order =
+                                        acme_account.new_order().dns(&domain).send().await?;
                                     orders.upsert_order(&domain, Order::from(&order)).await.ok();
                                     order
                                 }
                             };
 
                             if order.status() == &OrderStatus::Pending {
-                                let authorizations = order
-                                    .authorizations()
-                                    .await
-                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                let authorizations = order.authorizations().await?;
 
                                 let mut auth_challenge = AuthChallenge::new();
 
@@ -289,9 +279,7 @@ impl<S> AcmeAcceptor<S> {
                                     .iter()
                                     .find_map(|auth| auth.tls_alpn01_challenge())
                                 {
-                                    let key_auth = challenge
-                                        .key_authorization()
-                                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                    let key_auth = challenge.key_authorization()?;
                                     auth_challenge.add_tls_alpn01(key_auth);
                                 };
 
@@ -300,19 +288,15 @@ impl<S> AcmeAcceptor<S> {
                                         .iter()
                                         .find_map(|auth| auth.http01_challenge())
                                     {
-                                        let key_auth =
-                                            challenge.key_authorization().map_err(|err| {
-                                                io::Error::new(io::ErrorKind::Other, err)
-                                            })?;
+                                        let key_auth = challenge.key_authorization()?;
                                         auth_challenge.add_http01(challenge.token(), key_auth);
                                     };
                                 }
 
                                 if auth_challenge.is_empty() {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::Other,
-                                        format!("no available challenge for order {}", order.url()),
-                                    ));
+                                    let err =
+                                        format!("no available challenge for order {}", order.url());
+                                    return Err(err.into());
                                 }
 
                                 auth.put_challenge(auth_challenge).await?;
@@ -325,10 +309,7 @@ impl<S> AcmeAcceptor<S> {
                                     .iter()
                                     .find_map(|auth| auth.tls_alpn01_challenge())
                                 {
-                                    challenge
-                                        .validate()
-                                        .await
-                                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                    challenge.validate().await?;
                                 };
 
                                 if http_challenge {
@@ -336,9 +317,7 @@ impl<S> AcmeAcceptor<S> {
                                         .iter()
                                         .find_map(|auth| auth.http01_challenge())
                                     {
-                                        challenge.validate().await.map_err(|err| {
-                                            io::Error::new(io::ErrorKind::Other, err)
-                                        })?;
+                                        challenge.validate().await?;
                                     };
                                 }
                             } else {
@@ -348,10 +327,7 @@ impl<S> AcmeAcceptor<S> {
 
                             let key = papaleguas::PrivateKey::random_ec_key(rand::thread_rng());
                             let cert = loop {
-                                let order = acme_account
-                                    .find_order(order.url())
-                                    .await
-                                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                                let order = acme_account.find_order(order.url()).await?;
 
                                 orders.upsert_order(&domain, Order::from(&order)).await.ok();
 
@@ -361,29 +337,20 @@ impl<S> AcmeAcceptor<S> {
                                         tokio::time::sleep(Duration::from_secs(3)).await;
                                     }
                                     OrderStatus::Ready => {
-                                        order.finalize(&key).await.map_err(|err| {
-                                            io::Error::new(io::ErrorKind::Other, err)
-                                        })?;
+                                        order.finalize(&key).await?;
                                     }
                                     OrderStatus::Valid => {
-                                        break order.certificate().await.map_err(|err| {
-                                            io::Error::new(io::ErrorKind::Other, err)
-                                        })?;
+                                        break order.certificate().await?;
                                     }
                                     OrderStatus::Invalid => {
                                         orders.remove_order(&domain, order.url()).await.ok();
-                                        return Err(io::Error::new(
-                                            io::ErrorKind::Other,
-                                            format!("invalid order {}", order.url()),
-                                        ));
+                                        let err = format!("invalid order {}", order.url());
+                                        return Err(err.into());
                                     }
                                 }
                             };
 
-                            let key = key
-                                .to_der()
-                                .map(PrivateKey)
-                                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                            let key = key.to_der().map(PrivateKey)?;
 
                             let cert = pemfile::read_all(&mut cert.as_bytes())?;
                             let cert = cert
@@ -399,19 +366,9 @@ impl<S> AcmeAcceptor<S> {
                             debug!(domain = ?domain, "certificate generated");
 
                             orders.remove_order(&domain, order.url()).await.ok();
-
-                            continue;
                         }
                     }
-                    Ok::<_, io::Error>(())
-                });
-
-                tokio::spawn(async move {
-                    match task.await {
-                        Ok(Err(error)) => error!(%error),
-                        Err(error) => error!(%error),
-                        _ => {}
-                    }
+                    Ok(())
                 });
             }
             Ok::<_, io::Error>(())
