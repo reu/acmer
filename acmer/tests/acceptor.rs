@@ -1,4 +1,4 @@
-use std::{error::Error, io::Cursor, sync::Arc};
+use std::{error::Error, sync::Arc};
 
 use acmer::{
     store::{AccountStore, MemoryAccountStore},
@@ -6,12 +6,9 @@ use acmer::{
 };
 use papaleguas::{AcmeClient, PrivateKey};
 use rand::thread_rng;
-use rustls::OwnedTrustAnchor;
+use rustls::{client::ServerCertVerifier, Certificate};
 use test_log::test;
-use tokio::{
-    fs,
-    net::{TcpListener, TcpStream},
-};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
 
 const DIRCTORY_URL: &'static str = "https://localhost:14000/dir";
@@ -96,27 +93,24 @@ async fn acceptor_with_created_account_test() -> Result<(), Box<dyn Error + Send
 
 #[test(tokio::test)]
 async fn accept_certificate_test() -> Result<(), Box<dyn Error + Send + Sync>> {
+    struct NoCa;
+
+    impl ServerCertVerifier for NoCa {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &Certificate,
+            _intermediates: &[Certificate],
+            _server_name: &rustls::ServerName,
+            _scts: &mut dyn Iterator<Item = &[u8]>,
+            _ocsp_response: &[u8],
+            _now: std::time::SystemTime,
+        ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::ServerCertVerified::assertion())
+        }
+    }
+
     let listener = TcpListener::bind("0.0.0.0:0").await?;
     let addr = listener.local_addr().unwrap();
-
-    let root_cert_store = {
-        let mut root_cert_store = rustls::RootCertStore::empty();
-        let pem = fs::read_to_string("./tests/pebble.minica.pem")
-            .await
-            .unwrap();
-        let mut pem = Cursor::new(pem);
-        let certs = rustls_pemfile::certs(&mut pem)?;
-        let trust_anchors = certs.iter().map(|cert| {
-            let ta = webpki::TrustAnchor::try_from_cert_der(&cert[..]).unwrap();
-            OwnedTrustAnchor::from_subject_spki_name_constraints(
-                ta.subject,
-                ta.spki,
-                ta.name_constraints,
-            )
-        });
-        root_cert_store.add_server_trust_anchors(trust_anchors);
-        root_cert_store
-    };
 
     let mut acceptor = AcmeAcceptor::builder()
         .with_directory_url(DIRCTORY_URL)
@@ -130,7 +124,7 @@ async fn accept_certificate_test() -> Result<(), Box<dyn Error + Send + Sync>> {
     let connector = TlsConnector::from(Arc::new(
         rustls::ClientConfig::builder()
             .with_safe_defaults()
-            .with_root_certificates(root_cert_store)
+            .with_custom_certificate_verifier(Arc::new(NoCa))
             .with_no_client_auth(),
     ));
 

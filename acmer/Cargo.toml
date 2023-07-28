@@ -38,7 +38,5 @@ x509-cert = { version = "0.1.1", features = ["std"] }
 
 [dev-dependencies]
 aws-types = { version = "0.52.0", features = ["hardcoded-credentials"] }
-webpki = { package = "rustls-webpki", version = "0.100.1", features = ["alloc", "std"] }
-tempfile = "3.3.0"
 test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
