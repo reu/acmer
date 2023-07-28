@@ -1,6 +1,6 @@
 use std::{error::Error, sync::Arc};
 
-use acmer::acceptor::Connection;
+use acmer::TlsStream;
 use hyper::{
     header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, TRANSFER_ENCODING},
     http::{uri::Scheme, HeaderValue},
@@ -11,7 +11,7 @@ use tokio_stream::Stream;
 
 pub async fn proxy<T>(
     proxy_uri: impl Into<String>,
-    conns: impl Stream<Item = io::Result<Connection<T>>>,
+    conns: impl Stream<Item = io::Result<TlsStream<T>>>,
 ) where
     T: 'static,
     T: Send + Unpin,
@@ -21,8 +21,9 @@ pub async fn proxy<T>(
     let authority = proxy_uri.authority().cloned();
 
     hyper::Server::builder(server::accept::from_stream(conns))
-        .serve(service::make_service_fn(move |conn: &Connection<_>| {
-            let sni = Arc::new(conn.sni().to_owned());
+        .serve(service::make_service_fn(move |conn: &TlsStream<_>| {
+            let sni = conn.get_ref().1.server_name().unwrap_or_default();
+            let sni = Arc::new(sni.to_owned());
             let authority = authority.clone();
             let http = Arc::new(hyper::Client::new());
             let https_proto = HeaderValue::from_str("https").unwrap();

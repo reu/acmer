@@ -18,7 +18,7 @@ use tokio::{
     sync::mpsc,
     task::JoinHandle,
 };
-use tokio_rustls::{server::TlsStream, LazyConfigAcceptor};
+use tokio_rustls::LazyConfigAcceptor;
 use tokio_stream::{wrappers::UnboundedReceiverStream, Stream, StreamExt};
 use tracing::{debug, error, trace};
 
@@ -28,6 +28,7 @@ use crate::store::{
     OrderStore,
 };
 
+pub use tokio_rustls::server::TlsStream;
 pub use {builder::*, config::ConfigResolver, domain_check::DomainCheck};
 
 mod builder;
@@ -37,7 +38,7 @@ mod domain_check;
 const ACME_ALPN: &[u8] = b"acme-tls/1";
 
 pub struct AcmeAcceptor<S> {
-    connections: UnboundedReceiverStream<io::Result<Connection<S>>>,
+    connections: UnboundedReceiverStream<io::Result<TlsStream<S>>>,
     task: JoinHandle<io::Result<()>>,
 }
 
@@ -191,7 +192,6 @@ impl<S> AcmeAcceptor<S> {
 
                             match handshake.into_stream(Arc::new(config)).await {
                                 Ok(conn) => {
-                                    let conn = Connection { stream: conn };
                                     trace!(domain, "connection established");
                                     tx.send(Ok(conn)).ok();
                                 }
@@ -380,63 +380,15 @@ impl<S> AcmeAcceptor<S> {
         }
     }
 
-    pub async fn accept(&mut self) -> Option<io::Result<Connection<S>>> {
+    pub async fn accept(&mut self) -> Option<io::Result<TlsStream<S>>> {
         self.next().await
     }
 }
 
 impl<S> Stream for AcmeAcceptor<S> {
-    type Item = io::Result<Connection<S>>;
+    type Item = io::Result<TlsStream<S>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         pin!(&mut self.connections).poll_next(cx)
-    }
-}
-
-pub struct Connection<S> {
-    stream: TlsStream<S>,
-}
-
-impl<S> Connection<S> {
-    pub fn sni(&self) -> &str {
-        self.stream.get_ref().1.server_name().unwrap_or_default()
-    }
-
-    pub fn into_inner(self) -> TlsStream<S> {
-        self.stream
-    }
-}
-
-impl<S> AsyncRead for Connection<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut io::ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        pin!(&mut self.stream).poll_read(cx, buf)
-    }
-}
-
-impl<S> AsyncWrite for Connection<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        pin!(&mut self.stream).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        pin!(&mut self.stream).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        pin!(&mut self.stream).poll_shutdown(cx)
     }
 }
