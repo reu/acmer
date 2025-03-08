@@ -17,7 +17,7 @@ dynamodb-store = ["aws-config", "aws-sdk-dynamodb"]
 async-trait = "0.1.87"
 aws-config = { version = "0.52", optional = true }
 aws-sdk-dynamodb = { version = "0.22", optional = true }
-dashmap = "5.4"
+dashmap = "6.1.0"
 papaleguas = "0.0.8"
 pem-rfc7468 = "0.6.0"
 rand = "0.8"
