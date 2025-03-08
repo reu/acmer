@@ -14,7 +14,7 @@ repository = "https://github.com/reu/acmer"
 dynamodb-store = ["aws-config", "aws-sdk-dynamodb"]
 
 [dependencies]
-async-trait = "0.1.60"
+async-trait = "0.1.87"
 aws-config = { version = "0.52", optional = true }
 aws-sdk-dynamodb = { version = "0.22", optional = true }
 dashmap = "5.4"
