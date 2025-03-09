@@ -18,14 +18,13 @@ use aws_sdk_dynamodb::{
 };
 use pem_rfc7468 as pem;
 use rand::Rng;
-use rustls::{Certificate, PrivateKey};
-use rustls_pemfile as pemfile;
+use rustls_pki_types::pem::PemObject;
 use serde_json as json;
 use tokio::{io, time::sleep};
 
 use super::{
-    AccountStore, AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore, Order,
-    OrderStore,
+    AccountStore, AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore,
+    Certificate, Order, OrderStore, PrivateKey,
 };
 
 #[derive(Debug, Clone)]
@@ -225,7 +224,7 @@ impl CertStore for DynamodbStore {
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
         fn get_key(record: &GetItemOutput) -> Option<PrivateKey> {
-            Some(PrivateKey(
+            PrivateKey::try_from(
                 record
                     .item()?
                     .get("pkey")?
@@ -233,7 +232,8 @@ impl CertStore for DynamodbStore {
                     .ok()
                     .cloned()?
                     .into_inner(),
-            ))
+            )
+            .ok()
         }
 
         fn get_cert(record: &GetItemOutput) -> Option<&str> {
@@ -242,14 +242,9 @@ impl CertStore for DynamodbStore {
 
         match (get_key(&record), get_cert(&record)) {
             (Some(key), Some(cert)) => {
-                let cert = pemfile::read_all(&mut cert.as_bytes())?
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        pemfile::Item::X509Certificate(der) => Some(der),
-                        _ => None,
-                    })
-                    .map(Certificate)
-                    .collect::<Vec<Certificate>>();
+                let cert = Certificate::pem_slice_iter(cert.as_bytes())
+                    .filter_map(|cert| cert.ok())
+                    .collect();
                 Ok(Some((key, cert)))
             }
             _ => Ok(None),
@@ -264,7 +259,7 @@ impl CertStore for DynamodbStore {
     ) -> io::Result<()> {
         let cert = cert
             .into_iter()
-            .map(|cert| pem::encode_string("CERTIFICATE", pem::LineEnding::default(), &cert.0))
+            .map(|cert| pem::encode_string("CERTIFICATE", pem::LineEnding::default(), &cert))
             .collect::<Result<String, _>>()
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
@@ -272,7 +267,7 @@ impl CertStore for DynamodbStore {
             .put_item()
             .table_name(&self.table_name)
             .item("hostname", AttributeValue::S(domain.to_string()))
-            .item("pkey", AttributeValue::B(Blob::new(key.0)))
+            .item("pkey", AttributeValue::B(Blob::new(key.secret_der())))
             .item("cert", AttributeValue::S(cert))
             .send()
             .await
@@ -360,7 +355,7 @@ impl AccountStore for DynamodbStore {
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
             .item()
             .and_then(|item| item.get("pkey")?.as_b().ok().cloned())
-            .map(|key| PrivateKey(key.into_inner())))
+            .and_then(|key| PrivateKey::try_from(key.into_inner()).ok()))
     }
 
     async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
@@ -368,7 +363,7 @@ impl AccountStore for DynamodbStore {
             .put_item()
             .table_name(&self.table_name)
             .item("directory", AttributeValue::S(directory.to_string()))
-            .item("pkey", AttributeValue::B(Blob::new(key.0)))
+            .item("pkey", AttributeValue::B(Blob::new(key.secret_der())))
             .send()
             .await
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;

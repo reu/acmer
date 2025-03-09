@@ -1,6 +1,6 @@
 use papaleguas::AcmeClient;
-use rustls::{server::WantsServerCert, ConfigBuilder, PrivateKey, ServerConfig};
-use rustls_pemfile as pemfile;
+use rustls::{server::WantsServerCert, ConfigBuilder, ServerConfig};
+use rustls_pki_types::pem::PemObject;
 use thiserror::Error;
 use tokio::{
     io::{self, AsyncRead, AsyncWrite},
@@ -14,7 +14,8 @@ use tracing::info;
 
 use crate::store::{
     AccountStore, AuthChallengeStore, BoxedAccountStoreExt, CertStore, MemoryAccountStore,
-    MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore, OrderStore, SingleAccountStore,
+    MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore, OrderStore, PrivateKey,
+    SingleAccountStore,
 };
 
 use super::{config::ConfigResolver, domain_check::DomainCheck, AcmeAcceptor};
@@ -60,9 +61,7 @@ impl Default
             order_store: MemoryOrderStore::default(),
             account_store: MemoryAccountStore::default(),
             domain_checker: true,
-            config_resolver: ServerConfig::builder()
-                .with_safe_defaults()
-                .with_no_client_auth(),
+            config_resolver: ServerConfig::builder().with_no_client_auth(),
             http_challenge: false,
         }
     }
@@ -340,15 +339,14 @@ where
             .map_err(|_| AcmeAcceptorBuilderError::FailToFetchAcmeDirectory)?;
 
         let private_key = if let Some(AccountKey::Der(pk)) = self.account_pk {
-            Some(pk)
+            Some(
+                PrivateKey::try_from(pk)
+                    .map_err(|_| AcmeAcceptorBuilderError::InvalidAccountPrivateKey)?,
+            )
         } else if let Some(AccountKey::Pem(pk)) = self.account_pk {
             Some(
-                pemfile::read_one(&mut pk.as_bytes())
-                    .map_err(|_| AcmeAcceptorBuilderError::InvalidAccountPrivateKey)
-                    .and_then(|key| match key {
-                        Some(pemfile::Item::PKCS8Key(key)) => Ok(key),
-                        _ => Err(AcmeAcceptorBuilderError::InvalidAccountPrivateKey),
-                    })?,
+                PrivateKey::from_pem_slice(pk.as_bytes())
+                    .map_err(|_| AcmeAcceptorBuilderError::InvalidAccountPrivateKey)?,
             )
         } else {
             None
@@ -362,12 +360,12 @@ where
 
         let account_store = if let Some(key) = private_key {
             let account = account
-                .private_key(&key)
+                .private_key(key.secret_der())
                 .send()
                 .await
                 .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?;
             info!(kid = %account.kid(), "account from key created");
-            SingleAccountStore::new(PrivateKey(key)).boxed()
+            SingleAccountStore::new(key).boxed()
         } else {
             let account_store = self.account_store;
             let acme_directory = acme.directory_url();
@@ -384,8 +382,9 @@ where
                     .await
                     .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?;
                 info!(kid = %account.kid(), "new account created");
+                let private_key = PrivateKey::try_from(account.key().to_der().unwrap()).unwrap();
                 account_store
-                    .put_account(acme_directory, PrivateKey(account.key().to_der().unwrap()))
+                    .put_account(acme_directory, private_key)
                     .await
                     .map_err(|_| AcmeAcceptorBuilderError::FailToCreateAccount)?;
             }

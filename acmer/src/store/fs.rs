@@ -2,11 +2,10 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use pem_rfc7468 as pem;
-use rustls::{Certificate, PrivateKey};
-use rustls_pemfile as pemfile;
+use rustls_pki_types::pem::PemObject;
 use tokio::{fs, io, try_join};
 
-use super::{AccountStore, CertStore};
+use super::{AccountStore, CertStore, Certificate, PrivateKey};
 
 struct FileStore {
     directory: PathBuf,
@@ -28,15 +27,12 @@ impl CertStore for FileStore {
 
         let (key, cert) = try_join!(fs::read(key), fs::read(cert))?;
 
-        let key = PrivateKey(key);
-        let cert = pemfile::read_all(&mut cert.as_ref())?
-            .into_iter()
-            .filter_map(|item| match item {
-                pemfile::Item::X509Certificate(der) => Some(der),
-                _ => None,
-            })
-            .map(Certificate)
-            .collect::<Vec<Certificate>>();
+        let key = PrivateKey::try_from(key)
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+
+        let cert = Certificate::pem_slice_iter(&cert)
+            .map(|cert| cert.map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string())))
+            .collect::<io::Result<Vec<Certificate>>>()?;
 
         Ok(Some((key, cert)))
     }
@@ -52,11 +48,14 @@ impl CertStore for FileStore {
 
         let cert = cert
             .into_iter()
-            .map(|cert| pem::encode_string("CERTIFICATE", pem::LineEnding::default(), &cert.0))
+            .map(|cert| pem::encode_string("CERTIFICATE", pem::LineEnding::default(), &cert))
             .collect::<Result<String, _>>()
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
-        try_join!(fs::write(key_path, key.0), fs::write(cert_path, cert))?;
+        try_join!(
+            fs::write(key_path, key.secret_der()),
+            fs::write(cert_path, cert)
+        )?;
         Ok(())
     }
 }
@@ -73,14 +72,14 @@ impl AccountStore for FileStore {
                 "PRIVATE KEY" => Some(key),
                 _ => None,
             })
-            .map(PrivateKey);
+            .and_then(|key| PrivateKey::try_from(key).ok());
 
         Ok(key)
     }
 
     async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
         let path = self.directory.join(format!("account.{directory}.key"));
-        let key = pem::encode_string("PRIVATE KEY", pem::LineEnding::default(), &key.0)
+        let key = pem::encode_string("PRIVATE KEY", pem::LineEnding::default(), key.secret_der())
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
         fs::write(path, key).await?;
         Ok(())
@@ -141,9 +140,9 @@ mod test {
         let store = AccountFileStore::new(temp_dir());
         let key = papaleguas::PrivateKey::random_ec_key(rand::thread_rng())
             .to_der()
-            .map(PrivateKey)
+            .map(|key| PrivateKey::try_from(key).unwrap())
             .unwrap();
-        store.put_account("123", key.clone()).await.unwrap();
+        store.put_account("123", key.clone_key()).await.unwrap();
         assert_eq!(store.get_account("123").await.unwrap(), Some(key));
     }
 }

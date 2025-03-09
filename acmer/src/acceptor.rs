@@ -8,9 +8,9 @@ use std::{
 use papaleguas::{AcmeClient, OrderStatus};
 use rustls::{
     server::{Acceptor, WantsServerCert},
-    Certificate, ConfigBuilder, PrivateKey, ServerConfig,
+    ConfigBuilder, ServerConfig,
 };
-use rustls_pemfile as pemfile;
+use rustls_pki_types::pem::PemObject;
 use sha2::{Digest, Sha256};
 use tokio::{
     io::{self, AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -24,8 +24,8 @@ use tracing::{debug, error, trace};
 
 use crate::store::{
     AccountStore, AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore,
-    MemoryAccountStore, MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore, Order,
-    OrderStore,
+    Certificate, MemoryAccountStore, MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore,
+    Order, OrderStore, PrivateKey,
 };
 
 pub use tokio_rustls::server::TlsStream;
@@ -115,7 +115,7 @@ impl<S> AcmeAcceptor<S> {
                     trace!("starting handshake");
                     let Ok(handshake) = acceptor.await else {
                         trace!("handlshake cancelled");
-                        return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+                        return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(());
                     };
                     let hello = handshake.client_hello();
 
@@ -161,14 +161,13 @@ impl<S> AcmeAcceptor<S> {
 
                                 trace!(domain, "tls-alpn-01 certificate generated");
 
-                                let key = PrivateKey(cert.serialize_private_key_der());
-                                let cert = Certificate(cert.serialize_der().unwrap());
+                                let key = PrivateKey::try_from(cert.serialize_private_key_der())?;
+                                let cert = Certificate::from(cert.serialize_der().unwrap());
 
                                 trace!(domain, "finishing tls-alpn-01 handshake");
                                 let mut conn = handshake
                                     .into_stream(Arc::new({
                                         let mut config = ServerConfig::builder()
-                                            .with_safe_defaults()
                                             .with_no_client_auth()
                                             .with_single_cert(vec![cert], key)
                                             .unwrap();
@@ -218,7 +217,9 @@ impl<S> AcmeAcceptor<S> {
                                 let account_pk = accounts
                                     .get_account(acme_client.directory_url())
                                     .await?
-                                    .and_then(|acc| papaleguas::PrivateKey::from_der(&acc.0).ok());
+                                    .and_then(|acc| {
+                                        papaleguas::PrivateKey::from_der(acc.secret_der()).ok()
+                                    });
 
                                 let account = match account_pk {
                                     Some(pk) => {
@@ -350,16 +351,10 @@ impl<S> AcmeAcceptor<S> {
                                 }
                             };
 
-                            let key = key.to_der().map(PrivateKey)?;
+                            let key = PrivateKey::try_from(key.to_der()?)?;
 
-                            let cert = pemfile::read_all(&mut cert.as_bytes())?;
-                            let cert = cert
-                                .into_iter()
-                                .filter_map(|item| match item {
-                                    pemfile::Item::X509Certificate(der) => Some(der),
-                                    _ => None,
-                                })
-                                .map(Certificate)
+                            let cert = Certificate::pem_slice_iter(cert.as_bytes())
+                                .filter_map(|cert| cert.ok())
                                 .collect::<Vec<Certificate>>();
 
                             certs.put_cert(&domain, key, cert).await?;

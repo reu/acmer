@@ -6,7 +6,8 @@ use acmer::{
 };
 use papaleguas::{AcmeClient, PrivateKey};
 use rand::thread_rng;
-use rustls::{client::ServerCertVerifier, Certificate};
+use rustls::client::danger::ServerCertVerifier;
+use rustls_pki_types::ServerName;
 use test_log::test;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
@@ -24,6 +25,10 @@ async fn pebble_http_client() -> Result<reqwest::Client, Box<dyn Error>> {
 
 #[test(tokio::test)]
 async fn create_account_with_auto_generated_key_test() -> Result<(), Box<dyn Error + Send + Sync>> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     let account_repo = MemoryAccountStore::default();
 
     AcmeAcceptor::builder()
@@ -45,6 +50,10 @@ async fn create_account_with_auto_generated_key_test() -> Result<(), Box<dyn Err
 
 #[test(tokio::test)]
 async fn create_account_with_key_test() -> Result<(), Box<dyn Error + Send + Sync>> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     let key = PrivateKey::random_ec_key(thread_rng());
 
     AcmeAcceptor::builder()
@@ -62,6 +71,10 @@ async fn create_account_with_key_test() -> Result<(), Box<dyn Error + Send + Syn
 
 #[test(tokio::test)]
 async fn acceptor_with_created_account_test() -> Result<(), Box<dyn Error + Send + Sync>> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     let key = PrivateKey::random_ec_key(thread_rng());
 
     let acme = AcmeClient::builder()
@@ -93,19 +106,50 @@ async fn acceptor_with_created_account_test() -> Result<(), Box<dyn Error + Send
 
 #[test(tokio::test)]
 async fn accept_certificate_test() -> Result<(), Box<dyn Error + Send + Sync>> {
+    #[derive(Debug)]
     struct NoCa;
 
     impl ServerCertVerifier for NoCa {
         fn verify_server_cert(
             &self,
-            _end_entity: &Certificate,
-            _intermediates: &[Certificate],
-            _server_name: &rustls::ServerName,
-            _scts: &mut dyn Iterator<Item = &[u8]>,
+            _end_entity: &rustls_pki_types::CertificateDer<'_>,
+            _intermediates: &[rustls_pki_types::CertificateDer<'_>],
+            _server_name: &rustls_pki_types::ServerName<'_>,
             _ocsp_response: &[u8],
-            _now: std::time::SystemTime,
-        ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-            Ok(rustls::client::ServerCertVerified::assertion())
+            _now: rustls_pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls_pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls_pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            vec![
+                rustls::SignatureScheme::RSA_PSS_SHA256,
+                rustls::SignatureScheme::RSA_PSS_SHA384,
+                rustls::SignatureScheme::RSA_PSS_SHA512,
+                rustls::SignatureScheme::ED448,
+                rustls::SignatureScheme::ED25519,
+                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+                rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            ]
         }
     }
 
@@ -123,7 +167,7 @@ async fn accept_certificate_test() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let connector = TlsConnector::from(Arc::new(
         rustls::ClientConfig::builder()
-            .with_safe_defaults()
+            .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoCa))
             .with_no_client_auth(),
     ));
@@ -132,7 +176,7 @@ async fn accept_certificate_test() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let client = async {
         let tcp = TcpStream::connect(&addr).await.unwrap();
-        let domain = rustls::ServerName::try_from("lol.acmer.org").unwrap();
+        let domain = ServerName::try_from("lol.acmer.org").unwrap();
         let _tls = connector.connect(domain, tcp).await.ok();
     };
 

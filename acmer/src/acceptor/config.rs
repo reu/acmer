@@ -1,4 +1,6 @@
-use rustls::{server::WantsServerCert, Certificate, ConfigBuilder, PrivateKey, ServerConfig};
+use rustls::{server::WantsServerCert, ConfigBuilder, ServerConfig};
+
+use crate::store::{Certificate, PrivateKey};
 
 pub trait ConfigResolver: Send + Sync {
     fn rustls_config(

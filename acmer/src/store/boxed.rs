@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
-use rustls::{Certificate, PrivateKey};
 use tokio::io;
 
 use super::{
-    AccountStore, AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore, Order,
-    OrderStore,
+    AccountStore, AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore,
+    Certificate, Order, OrderStore, PrivateKey,
 };
 
 pub struct BoxedCertStore(Box<dyn CertStore>);

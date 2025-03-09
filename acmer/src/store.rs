@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use dashmap::DashMap;
 pub use papaleguas::OrderStatus;
-use rustls::{Certificate, PrivateKey};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tokio::{
@@ -27,6 +27,9 @@ mod boxed;
 #[cfg(feature = "dynamodb-store")]
 mod dynamodb;
 mod fs;
+
+pub type PrivateKey = PrivateKeyDer<'static>;
+pub type Certificate = CertificateDer<'static>;
 
 #[async_trait]
 pub trait CertStore: Send + Sync {
@@ -162,7 +165,11 @@ pub trait AuthChallengeDomainLock: Send + Sync {
 #[async_trait]
 impl CertStore for RwLock<HashMap<String, (PrivateKey, Vec<Certificate>)>> {
     async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
-        Ok(self.read().await.get(domain).cloned())
+        Ok(self
+            .read()
+            .await
+            .get(domain)
+            .map(|(key, certs)| (key.clone_key(), certs.clone())))
     }
 
     async fn put_cert(
@@ -179,7 +186,10 @@ impl CertStore for RwLock<HashMap<String, (PrivateKey, Vec<Certificate>)>> {
 #[async_trait]
 impl CertStore for DashMap<String, (PrivateKey, Vec<Certificate>)> {
     async fn get_cert(&self, domain: &str) -> io::Result<Option<(PrivateKey, Vec<Certificate>)>> {
-        Ok(self.get(domain).map(|item| item.value().clone()))
+        Ok(self.get(domain).map(|item| {
+            let (key, certs) = item.value();
+            (key.clone_key(), certs.clone())
+        }))
     }
 
     async fn put_cert(
@@ -263,7 +273,7 @@ impl OrderStore for MemoryOrderStore {
 #[async_trait]
 impl AccountStore for DashMap<String, PrivateKey> {
     async fn get_account(&self, directory: &str) -> io::Result<Option<PrivateKey>> {
-        Ok(self.get(directory).map(|item| item.value().clone()))
+        Ok(self.get(directory).map(|item| item.clone_key()))
     }
 
     async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
@@ -364,7 +374,7 @@ impl<S: CertStore> CertStore for CachedCertStore<S> {
         if let Some((key, cert)) = self.store.get_cert(domain).await? {
             trace!(domain, "cert not cached, caching now");
             self.cache
-                .put_cert(domain, key.clone(), cert.clone())
+                .put_cert(domain, key.clone_key(), cert.clone())
                 .await?;
             return Ok(Some((key, cert)));
         }
@@ -380,7 +390,7 @@ impl<S: CertStore> CertStore for CachedCertStore<S> {
     ) -> io::Result<()> {
         trace!(domain, "caching cert");
         try_join!(
-            self.store.put_cert(domain, key.clone(), cert.clone()),
+            self.store.put_cert(domain, key.clone_key(), cert.clone()),
             self.cache.put_cert(domain, key, cert),
         )?;
         Ok(())
@@ -393,7 +403,7 @@ pub struct CertExpirationTimeStore<S> {
 
 fn cert_validity(cert: &[Certificate]) -> Option<SystemTime> {
     cert.iter()
-        .filter_map(|cert| X509Certificate::from_der(&cert.0).ok())
+        .filter_map(|cert| X509Certificate::from_der(cert).ok())
         .map(|cert| cert.tbs_certificate.validity)
         .map(|val| val.not_after.to_system_time())
         .min()
@@ -458,7 +468,7 @@ impl SingleAccountStore {
 #[async_trait]
 impl AccountStore for SingleAccountStore {
     async fn get_account(&self, _directory: &str) -> io::Result<Option<PrivateKey>> {
-        Ok(Some(self.0.clone()))
+        Ok(Some(self.0.clone_key()))
     }
 
     async fn put_account(&self, _directory: &str, _key: PrivateKey) -> io::Result<()> {
@@ -468,27 +478,83 @@ impl AccountStore for SingleAccountStore {
 
 #[cfg(test)]
 mod test {
+    use indoc::indoc;
     use papaleguas::OrderStatus;
-    use rustls::{Certificate, PrivateKey};
+    use rustls_pki_types::pem::{PemObject, SectionKind};
 
     use crate::store::{
         AuthChallenge, AuthChallengeDomainLock, AuthChallengeStore, CertStore,
         MemoryAuthChallengeStore, MemoryCertStore, MemoryOrderStore, OrderStore,
     };
 
-    use super::Order;
+    use super::{Certificate, Order, PrivateKey};
 
     #[tokio::test]
     async fn test_memory_store() {
+        let pkey = indoc! {"
+            -----BEGIN PRIVATE KEY-----
+            MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCq1WvODxLHgRNw
+            Fq7rHh9gCfCEtbN7iE2W6arQ+zYPVWiNQrKNyBqe9n2Ao/77EBnhKzJ3YrVBesGs
+            b+DE/mMXIR/2skchNTX314zaZ13fIn/QnQBtsnh3uzwfk9dFe2Z2v9WSWzumPXoP
+            UyEVt8OShW3kfjRM7WNu8IDubU1SiskRUym86fJCqIEPIwf0EkXN9Lt7fU+00X2A
+            A3Bay3uepg0uaPDmdiWwnTSXYaY4JxIVJ6V1ntzjpuRHaVEfXzCpcaWLBpJbr+uT
+            Le2RBfa6Pa7QjlY6moYAwaDfoF0Kk8U4tpV5X4Fx4wWNhPqUg8Y6NY3WJYXlB6fu
+            uDn+DPFrAgMBAAECggEASjJHkEebsGqvNo+jiRqcJeorPHhua8jXaiQyvHFfGWnO
+            7wt44Xt3lHMaLzULGZ/0nYdVc+S7NKVMWMh+pxCVmQYaC9uCaTnjJrHHy1P5wWAK
+            g2CtPve0usvnYQ+k/9iIuCq5Z8eYMKuix+UjCXu2xXyOLh9iN8ci2Jw8Y1G1s5M9
+            vk5MW4lvtb/WTAh6jTRXHMdx1RHjY8nGtf+eYu52uYm0ZWMh+H7zGzApCX1mpPKr
+            lMwwzGLIUcrBZ1Q98yRsdnOr5ErzWoRH44k0+CfmpWsnoWtWUbWM4WUeQDEywx6k
+            8aAkuVQRKvKem3ifoPG8mAjij6sfV/v19ffusn/KAQKBgQDG5z8JTUGTxYar4H/D
+            Gi1bMI9atzDdbsE499rWpPZ5BuwtSDmMACS5lWu8pT/YSELNOu5PtKK6H41ZADLW
+            kGItzCOcPQTOAAdnD5T29+jVG3hnfQCIBEksa97uWGamX00P21qUAeRStWaKf//O
+            dL6h9W7zP04tYah/zwQ5n4EcMQKBgQDb3234Di8/RQPLAJm2VoXCT/1+cRcgfKCm
+            YvmmNOzPlGmYrSHx9khlZUXdTy2aZj0NGHaWJPbE5sCVnsw7dqXPibJ1TYN/PIHJ
+            X1MYQjnHRkFZDpk/fSd8xl6ZcRHTjehhd8qbyZHTFIUHX59oC3e+uwNg862fkoYH
+            TAsp3OesWwKBgQDDKtDNncLE7sKwD/8NP7hVjBZ92tbV0AFElt9iUkeOhd5kqEPf
+            PZzLhPRMDJHS9USnADYqe4JYwvD87Zb0toO/kFk4yx7Vy214EPAITUVnJidE1IEa
+            9amfLtF2acN/aG/DKWd9Z0XUai6No/8rY55SaPNPN0TMftDJaCYrLHmRYQKBgFX9
+            kQWljobhF/Wp23P7bL6tCAgOdKwI8c+BAAAnzMH2WkIS3CbEWlYFgIhoMf6jo5be
+            jWp1NGmXkZQykc9jvL9pK/lCgn4djOjTtizTocM0z9PjqL2y1eGvt0mtdfpWEp8j
+            +YJqF/UEnm5e0HohmghnHZAqXSn+ZRqve+I4egbnAoGBALeuy9MMaLQEL4HzGyvy
+            C2U5FYAohdbw05WSfuvE8weluvND2DbQvNXq/0MAt3D0AviGTR9k0zpO+OS/nLnv
+            nuRgPCQl8N7RLKQqKf/grE9LAlZGj8pajn7ARhutjVs9z7CYQU8zthyUIvrqTLqQ
+            b41I4V1EVPutE18LGpgWFRfJ
+            -----END PRIVATE KEY-----
+        "};
+
+        let cert = indoc! {"
+            -----BEGIN CERTIFICATE-----
+            MIIDazCCAlOgAwIBAgIUVE8Tzvqz/Sd9VdOf94+FygbEMeIwDQYJKoZIhvcNAQEL
+            BQAwRTELMAkGA1UEBhMCVVMxEzARBgNVBAgMClNvbWUtU3RhdGUxITAfBgNVBAoM
+            GEludGVybmV0IFdpZGdpdHMgUHR5IEx0ZDAeFw0yNTAzMDkxMzUyMjFaFw0yNjAz
+            MDkxMzUyMjFaMEUxCzAJBgNVBAYTAlVTMRMwEQYDVQQIDApTb21lLVN0YXRlMSEw
+            HwYDVQQKDBhJbnRlcm5ldCBXaWRnaXRzIFB0eSBMdGQwggEiMA0GCSqGSIb3DQEB
+            AQUAA4IBDwAwggEKAoIBAQCq1WvODxLHgRNwFq7rHh9gCfCEtbN7iE2W6arQ+zYP
+            VWiNQrKNyBqe9n2Ao/77EBnhKzJ3YrVBesGsb+DE/mMXIR/2skchNTX314zaZ13f
+            In/QnQBtsnh3uzwfk9dFe2Z2v9WSWzumPXoPUyEVt8OShW3kfjRM7WNu8IDubU1S
+            iskRUym86fJCqIEPIwf0EkXN9Lt7fU+00X2AA3Bay3uepg0uaPDmdiWwnTSXYaY4
+            JxIVJ6V1ntzjpuRHaVEfXzCpcaWLBpJbr+uTLe2RBfa6Pa7QjlY6moYAwaDfoF0K
+            k8U4tpV5X4Fx4wWNhPqUg8Y6NY3WJYXlB6fuuDn+DPFrAgMBAAGjUzBRMB0GA1Ud
+            DgQWBBSXhnoVxEQENyRiCooUeIov7R7yLDAfBgNVHSMEGDAWgBSXhnoVxEQENyRi
+            CooUeIov7R7yLDAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQCB
+            4oNLXCd6gP8MlOyaYA9NZEfihNOZ/lg24UAtTs92btWYpsERqIm3cuRQ/mhpUnYR
+            rr4yzIHY3LzG2pK1LjbEIStRjCsPb/fCLcxx9tffxweiwpY+AxjdO4R/v9bFjxk4
+            sfb8h0ls7idqJOzU43PfTbHLaiKaPITw3TBNi5tn88bGag4iWIUdFTXbInL603Pz
+            R/g27O0Q3ohsA07C0i+GZbdtR1mghSlXj3m7bnAVDyCac670AE33c5dYKiyudRXB
+            17dFJhag9cNIXgCIaoEGMmqByuZVCbZshJb1ac3sP3bk7LR35TPm0DmL4ReiycJg
+            0W3rtqDKWRuaPAS8WMZw
+            -----END CERTIFICATE-----
+        "};
+
         let store = MemoryCertStore::default();
 
-        let pkey = PrivateKey(b"pkey".to_vec());
-        let cert = vec![Certificate(b"cert".to_vec())];
+        let pkey = PrivateKey::from_pem(SectionKind::PrivateKey, pkey.as_bytes().to_vec()).unwrap();
+        let cert = vec![Certificate::from_pem_slice(cert.as_bytes()).unwrap()];
 
         assert!(store.get_cert("lol.wut").await.unwrap().is_none());
 
         store
-            .put_cert("lol.wut", pkey.clone(), cert.clone())
+            .put_cert("lol.wut", pkey.clone_key(), cert.clone())
             .await
             .unwrap();
 
