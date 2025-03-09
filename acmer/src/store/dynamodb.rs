@@ -296,7 +296,7 @@ impl OrderStore for DynamodbStore {
             .await
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
             .items()
-            .into_iter()
+            .iter()
             .filter_map(|item| json::from_str(item.get("order")?.as_s().ok()?).ok())
             .collect();
         Ok(orders)
