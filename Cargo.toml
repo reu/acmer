@@ -2,5 +2,17 @@
 resolver = "2"
 members = [
   "acmer",
-  "acmer-cli",
+  "acmer-server",
 ]
+
+[workspace.package]
+version = "0.0.17"
+edition = "2021"
+authors = ["Rodrigo Navarro <rnavarro@rnavarro.com.br>"]
+license = "MIT"
+documentation = "https://docs.rs/acmer"
+repository = "https://github.com/reu/acmer"
+keywords = ["tls", "acme"]
+
+[workspace.dependencies]
+acmer = { version = "0.0.17", path = "./acmer" }

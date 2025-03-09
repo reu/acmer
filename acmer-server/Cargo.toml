@@ -1,0 +1,16 @@
+[package]
+name = "acmer-server"
+description = "ACME TLS certificates proxy server"
+categories = ["cryptography", "network-programming", "command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+documentation.workspace = true
+repository.workspace = true
+
+[dependencies]
+acmer = { workspace = true, features = ["dynamodb-store"] }
+tokio = { version = "1.23.0", features = ["full"] }
+tokio-stream = "0.1.11"
