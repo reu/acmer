@@ -11,8 +11,6 @@ use acmer::{
 };
 use tokio::{io, net::TcpListener};
 
-#[cfg(feature = "http")]
-mod http_proxy;
 mod tcp_proxy;
 
 #[tokio::main]
@@ -74,13 +72,6 @@ async fn main() -> io::Result<()> {
     if let Ok(addr) = env::var("TCP_PROXY_ADDRESS") {
         let addr: SocketAddr = addr.parse().unwrap();
         tcp_proxy::proxy(addr, acceptor).await;
-    } else if env::var("HTTP_PROXY_ADDRESS").is_ok() {
-        if cfg!(feature = "http") {
-            #[cfg(feature = "http")]
-            http_proxy::proxy(env::var("HTTP_PROXY_ADDRESS").unwrap(), acceptor).await;
-        } else {
-            panic!("ACMER was not compiled with HTTP proxy support")
-        }
     } else {
         panic!("No proxy address informed")
     }

@@ -38,7 +38,6 @@ name = "acmer-cli"
 version = "0.0.3"
 dependencies = [
  "acmer",
- "hyper 0.14.32",
  "tokio",
  "tokio-stream",
 ]

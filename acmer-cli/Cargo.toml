@@ -10,11 +10,7 @@ keywords = ["tls", "acme"]
 documentation = "https://docs.rs/acmer"
 repository = "https://github.com/reu/acmer"
 
-[features]
-http = ["hyper"]
-
 [dependencies]
 acmer = { path = "../acmer", features = ["dynamodb-store"] }
-hyper = { version = "0.14.23", optional = true, features = ["http1", "http2", "server", "stream"] }
 tokio = { version = "1.23.0", features = ["full"] }
 tokio-stream = "0.1.11"
