@@ -7,13 +7,13 @@ use std::{
 
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{
-    error::CreateTableError,
-    model::{
+    error::SdkError,
+    operation::{create_table::CreateTableError, get_item::GetItemOutput},
+    primitives::Blob,
+    types::{
         AttributeDefinition, AttributeValue, BillingMode, ComparisonOperator, Condition,
         KeySchemaElement, KeyType, ScalarAttributeType, TableStatus, TimeToLiveSpecification,
     },
-    output::GetItemOutput,
-    types::{Blob, SdkError},
     Client,
 };
 use pem_rfc7468 as pem;
@@ -54,13 +54,13 @@ impl DynamodbStore {
                 KeySchemaElement::builder()
                     .attribute_name("hostname")
                     .key_type(KeyType::Hash)
-                    .build(),
+                    .build()?,
             )
             .attribute_definitions(
                 AttributeDefinition::builder()
                     .attribute_name("hostname")
                     .attribute_type(ScalarAttributeType::S)
-                    .build(),
+                    .build()?,
             )
             .billing_mode(BillingMode::PayPerRequest)
             .send()
@@ -76,13 +76,13 @@ impl DynamodbStore {
                 KeySchemaElement::builder()
                     .attribute_name("directory")
                     .key_type(KeyType::Hash)
-                    .build(),
+                    .build()?,
             )
             .attribute_definitions(
                 AttributeDefinition::builder()
                     .attribute_name("directory")
                     .attribute_type(ScalarAttributeType::S)
-                    .build(),
+                    .build()?,
             )
             .billing_mode(BillingMode::PayPerRequest)
             .send()
@@ -98,25 +98,25 @@ impl DynamodbStore {
                 KeySchemaElement::builder()
                     .attribute_name("hostname")
                     .key_type(KeyType::Hash)
-                    .build(),
+                    .build()?,
             )
             .key_schema(
                 KeySchemaElement::builder()
                     .attribute_name("order_url")
                     .key_type(KeyType::Range)
-                    .build(),
+                    .build()?,
             )
             .attribute_definitions(
                 AttributeDefinition::builder()
                     .attribute_name("hostname")
                     .attribute_type(ScalarAttributeType::S)
-                    .build(),
+                    .build()?,
             )
             .attribute_definitions(
                 AttributeDefinition::builder()
                     .attribute_name("order_url")
                     .attribute_type(ScalarAttributeType::S)
-                    .build(),
+                    .build()?,
             )
             .billing_mode(BillingMode::PayPerRequest)
             .send()
@@ -148,7 +148,7 @@ impl DynamodbStore {
                 TimeToLiveSpecification::builder()
                     .attribute_name("ttl")
                     .enabled(true)
-                    .build(),
+                    .build()?,
             )
             .send()
             .await?;
@@ -164,13 +164,13 @@ impl DynamodbStore {
                 KeySchemaElement::builder()
                     .attribute_name("hostname")
                     .key_type(KeyType::Hash)
-                    .build(),
+                    .build()?,
             )
             .attribute_definitions(
                 AttributeDefinition::builder()
                     .attribute_name("hostname")
                     .attribute_type(ScalarAttributeType::S)
-                    .build(),
+                    .build()?,
             )
             .billing_mode(BillingMode::PayPerRequest)
             .send()
@@ -202,7 +202,7 @@ impl DynamodbStore {
                 TimeToLiveSpecification::builder()
                     .attribute_name("ttl")
                     .enabled(true)
-                    .build(),
+                    .build()?,
             )
             .send()
             .await?;
@@ -289,19 +289,16 @@ impl OrderStore for DynamodbStore {
                 Condition::builder()
                     .comparison_operator(ComparisonOperator::Eq)
                     .attribute_value_list(AttributeValue::S(domain.to_owned()))
-                    .build(),
+                    .build()
+                    .unwrap(),
             )
             .send()
             .await
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
             .items()
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| json::from_str(item.get("order")?.as_s().ok()?).ok())
-                    .collect::<HashSet<Order>>()
-            })
-            .unwrap_or_default();
+            .into_iter()
+            .filter_map(|item| json::from_str(item.get("order")?.as_s().ok()?).ok())
+            .collect();
         Ok(orders)
     }
 
@@ -618,7 +615,6 @@ impl AuthChallengeStore for AuthChallengeDynamodbStore {
 
 #[cfg(test)]
 mod test {
-    use aws_sdk_dynamodb::{Config, Endpoint, Region};
     use rand::distributions::{Alphanumeric, DistString};
 
     use crate::store::{BoxedAuthChallengeStoreExt, OrderStatus};
@@ -626,16 +622,17 @@ mod test {
     use super::*;
 
     async fn create_dynamodb_client() -> Client {
-        let creds = aws_types::Credentials::from_keys(
+        let creds = aws_credential_types::Credentials::from_keys(
             "XXXXXXXXXXXXXXXXXXXX",
             "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY",
             None,
         );
 
-        let config = Config::builder()
-            .region(Region::new("us-east-1"))
+        let config = aws_sdk_dynamodb::Config::builder()
+            .region(aws_config::Region::new("us-east-1"))
             .credentials_provider(creds)
-            .endpoint_resolver(Endpoint::immutable("http://localhost:8000").unwrap())
+            .endpoint_url("http://localhost:8000")
+            .behavior_version_latest()
             .build();
 
         let dynamo = Client::from_conf(config);
