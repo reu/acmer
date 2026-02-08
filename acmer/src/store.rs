@@ -321,7 +321,7 @@ impl AuthChallengeStore for MemoryAuthChallengeStore {
             .clone()
             .try_write_owned()
             .map(MemoryAuthChallengeStoreGuard)
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "could not arquire lock"))
+            .map_err(|_| io::Error::other("could not arquire lock"))
     }
 
     async fn unlock(&self, domain: &str) -> io::Result<()> {

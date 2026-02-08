@@ -27,11 +27,10 @@ impl CertStore for FileStore {
 
         let (key, cert) = try_join!(fs::read(key), fs::read(cert))?;
 
-        let key = PrivateKey::try_from(key)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        let key = PrivateKey::try_from(key).map_err(|err| io::Error::other(err.to_string()))?;
 
         let cert = Certificate::pem_slice_iter(&cert)
-            .map(|cert| cert.map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string())))
+            .map(|cert| cert.map_err(|err| io::Error::other(err.to_string())))
             .collect::<io::Result<Vec<Certificate>>>()?;
 
         Ok(Some((key, cert)))
@@ -50,7 +49,7 @@ impl CertStore for FileStore {
             .into_iter()
             .map(|cert| pem::encode_string("CERTIFICATE", pem::LineEnding::default(), &cert))
             .collect::<Result<String, _>>()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| io::Error::other(err.to_string()))?;
 
         try_join!(
             fs::write(key_path, key.secret_der()),
@@ -80,7 +79,7 @@ impl AccountStore for FileStore {
     async fn put_account(&self, directory: &str, key: PrivateKey) -> io::Result<()> {
         let path = self.directory.join(format!("account.{directory}.key"));
         let key = pem::encode_string("PRIVATE KEY", pem::LineEnding::default(), key.secret_der())
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| io::Error::other(err.to_string()))?;
         fs::write(path, key).await?;
         Ok(())
     }

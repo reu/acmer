@@ -12,7 +12,7 @@ use test_log::test;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
 
-const DIRCTORY_URL: &'static str = "https://localhost:14000/dir";
+const DIRCTORY_URL: &str = "https://localhost:14000/dir";
 
 async fn pebble_http_client() -> Result<reqwest::Client, Box<dyn Error>> {
     let cert = tokio::fs::read("./tests/pebble.minica.pem").await?;
@@ -43,7 +43,7 @@ async fn create_account_with_auto_generated_key_test() -> Result<(), Box<dyn Err
 
     let account = account_repo.get_account(DIRCTORY_URL).await.unwrap();
 
-    assert!(!account.is_none());
+    assert!(account.is_some());
 
     Ok(())
 }

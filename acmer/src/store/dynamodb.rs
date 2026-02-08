@@ -221,7 +221,7 @@ impl CertStore for DynamodbStore {
             .key("hostname", AttributeValue::S(domain.to_string()))
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
 
         fn get_key(record: &GetItemOutput) -> Option<PrivateKey> {
             PrivateKey::try_from(
@@ -261,7 +261,7 @@ impl CertStore for DynamodbStore {
             .into_iter()
             .map(|cert| pem::encode_string("CERTIFICATE", pem::LineEnding::default(), &cert))
             .collect::<Result<String, _>>()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| io::Error::other(err.to_string()))?;
 
         self.client
             .put_item()
@@ -271,7 +271,7 @@ impl CertStore for DynamodbStore {
             .item("cert", AttributeValue::S(cert))
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| io::Error::other(err.to_string()))?;
 
         Ok(())
     }
@@ -294,7 +294,7 @@ impl OrderStore for DynamodbStore {
             )
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+            .map_err(io::Error::other)?
             .items()
             .iter()
             .filter_map(|item| json::from_str(item.get("order")?.as_s().ok()?).ok())
@@ -321,7 +321,7 @@ impl OrderStore for DynamodbStore {
 
         req.send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
 
         Ok(())
     }
@@ -334,7 +334,7 @@ impl OrderStore for DynamodbStore {
             .key("order_url", AttributeValue::S(order_url.to_string()))
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 }
@@ -349,7 +349,7 @@ impl AccountStore for DynamodbStore {
             .key("directory", AttributeValue::S(directory.to_string()))
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+            .map_err(io::Error::other)?
             .item()
             .and_then(|item| item.get("pkey")?.as_b().ok().cloned())
             .and_then(|key| PrivateKey::try_from(key.into_inner()).ok()))
@@ -363,7 +363,7 @@ impl AccountStore for DynamodbStore {
             .item("pkey", AttributeValue::B(Blob::new(key.secret_der())))
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
 
         Ok(())
     }
@@ -381,7 +381,7 @@ impl AuthChallengeStore for DynamodbStore {
             .key("hostname", AttributeValue::S(domain.to_string()))
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+            .map_err(io::Error::other)?
             .item()
             .and_then(|item| json::from_str(item.get("challenge")?.as_s().ok()?).ok()))
     }
@@ -401,7 +401,7 @@ impl AuthChallengeStore for DynamodbStore {
                 AttributeValue::N(
                     (SystemTime::now() + ttl)
                         .duration_since(SystemTime::UNIX_EPOCH)
-                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+                        .map_err(io::Error::other)?
                         .as_secs()
                         .to_string(),
                 ),
@@ -416,14 +416,14 @@ impl AuthChallengeStore for DynamodbStore {
                 AttributeValue::N(
                     SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
-                        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+                        .map_err(io::Error::other)?
                         .as_secs()
                         .to_string(),
                 ),
             )
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
 
         Ok(DynamodbAuthChallengeLock {
             client: self.client.clone(),
@@ -441,7 +441,7 @@ impl AuthChallengeStore for DynamodbStore {
             .key("hostname", AttributeValue::S(domain.to_string()))
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 }
@@ -481,7 +481,7 @@ impl AuthChallengeDomainLock for DynamodbAuthChallengeLock {
             .expression_attribute_values(":lock", AttributeValue::B(Blob::new(self.lock_id)))
             .send()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 }
