@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acmer"
-version = "0.0.17"
+version = "0.0.18"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "acmer-server"
-version = "0.0.17"
+version = "0.0.18"
 dependencies = [
  "acmer",
  "tokio",
