@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr};
+use std::{collections::HashSet, env, net::SocketAddr};
 
 use acmer::{
     acceptor::AcmeAcceptor,
@@ -31,6 +31,13 @@ async fn main() -> io::Result<()> {
         _ => acceptor.with_lets_encrypt_staging(),
     };
 
+    let allowed_domains: Option<HashSet<String>> = env::var("ALLOWED_DOMAINS").ok().map(|val| {
+        val.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+
     let acceptor = acceptor
         .with_contact(acme_email)
         .with_account_store(if let Ok(table) = env::var("DYNAMO_ACCOUNT_STORE_TABLE") {
@@ -62,12 +69,21 @@ async fn main() -> io::Result<()> {
             } else {
                 MemoryAuthChallengeStore::default().boxed()
             },
-        )
-        .build_from_tcp_listener(
-            TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], https_port))).await?,
-        )
-        .await
-        .unwrap();
+        );
+
+    let tcp_listener = TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], https_port))).await?;
+
+    let acceptor = match allowed_domains {
+        Some(domains) => acceptor
+            .allowed_domains(domains)
+            .build_from_tcp_listener(tcp_listener)
+            .await
+            .unwrap(),
+        None => acceptor
+            .build_from_tcp_listener(tcp_listener)
+            .await
+            .unwrap(),
+    };
 
     if let Ok(addr) = env::var("TCP_PROXY_ADDRESS") {
         let addr: SocketAddr = addr.parse().unwrap();
